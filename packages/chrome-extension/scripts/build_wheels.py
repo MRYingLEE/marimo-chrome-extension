@@ -24,8 +24,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-import tomlkit
-
 ROOT = Path(__file__).resolve().parents[3]
 LOCAL_SEGMENT = "chromeext"
 IGNORED = (
@@ -41,15 +39,18 @@ IGNORED = (
 )
 
 
-def _uv_build(cwd: Path, out_dir: Path) -> None:
+def _uv_build(cwd: Path, out_dir: Path, env: dict[str, str] | None) -> None:
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(out_dir)],
         cwd=cwd,
+        env=env,
         check=True,
     )
 
 
-def main(out_dir: Path) -> None:
+def main(out_dir: Path, *, env: dict[str, str] | None = None) -> None:
+    import tomlkit
+
     if not (ROOT / "marimo" / "_static" / "index.html").exists():
         sys.exit("marimo/_static is missing. Run `make fe` first.")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +61,7 @@ def main(out_dir: Path) -> None:
             src,
             # Only prune top-level directories: `marimo/_runtime/packages`
             # must survive.
-            ignore=lambda directory, names: (
+            ignore=lambda directory, _names: (
                 IGNORED if Path(directory) == ROOT else ()
             ),
         )
@@ -76,7 +77,7 @@ def main(out_dir: Path) -> None:
         assert count == 1, "version line not found in pyproject.toml"
         pyproject.write_text(text, encoding="utf-8")
 
-        _uv_build(src, out_dir)
+        _uv_build(src, out_dir, env)
 
         data = tomlkit.loads(pyproject.read_text(encoding="utf-8"))
         data["project"]["name"] = "marimo-base"
@@ -92,10 +93,7 @@ def main(out_dir: Path) -> None:
         ]
         backend["source-exclude"] = excluded
         pyproject.write_text(tomlkit.dumps(data), encoding="utf-8")
-        _uv_build(src, out_dir)
-
-    for wheel in sorted(out_dir.glob("*.whl")):
-        print(wheel)
+        _uv_build(src, out_dir, env)
 
 
 if __name__ == "__main__":

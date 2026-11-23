@@ -1,7 +1,7 @@
 # Design: marimo in a Chrome side panel
 
-Status: proposal. Phase 1 (the spike) is done and chose option B, see [Spike](#spike).
-Nothing else is implemented yet.
+Status: phases 1 and 2 are implemented. The [spike](#spike) chose option B.
+The extension shell runs the bundled seed; notebook I/O is still planned.
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
 in the browser, with no marimo server and no network access at runtime.
@@ -85,7 +85,7 @@ frontend changes that also help strict-CSP web deployments. They cannot (see
 toolbar action ─► background service worker
                    - sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
 side panel ─► sidepanel.html  (extension page, strict CSP, has chrome.* APIs)
-               ├─ panel.js    (reads the notebook from chrome.storage, answers the sandbox)
+               ├─ panel.js    (sends the bundled seed; phase 3 adds chrome.storage)
                └─ <iframe src="sandbox/index.html">
                     sandboxed page (opaque origin, relaxed CSP, no chrome.*)
                     output of `marimo export html-wasm --offline`, post-processed
@@ -96,8 +96,8 @@ side panel ─► sidepanel.html  (extension page, strict CSP, has chrome.* APIs
                     └─ module worker ─► Pyodide ─► marimo-base from packages/
 ```
 
-The two pages talk only through `postMessage`. The parent owns persistence, and
-the sandbox owns everything that executes notebook output.
+The two pages talk only through `postMessage`. The sandbox owns everything
+that executes notebook output. The parent will own persistence in phase 3.
 
 Messages (all validated: the parent checks `event.source` is its iframe, and
 the sandbox checks `event.source === parent`):
@@ -106,27 +106,35 @@ the sandbox checks `event.source === parent`):
 | --- | --- | --- |
 | sandbox → parent | `ready` | `boot.js` is loaded and waits for the notebook |
 | parent → sandbox | `init { code, filename }` | The notebook to open, from `chrome.storage.local` or the seed |
-| sandbox → parent | `save { code }` | The notebook changed, so persist it |
-| parent → sandbox | `open { code, filename }` | The user picked a `.py` file |
+| sandbox → parent | `save { code }` | Phase 3: the notebook changed, so persist it |
+| parent → sandbox | `open { code, filename }` | Phase 3: the user picked a `.py` file |
 
 ### Build pipeline (`packages/chrome-extension`)
 
-A new pnpm workspace package (the `packages/*` glob already covers it).
+A private pnpm workspace package with no npm dependencies. With the development
+Python environment active, run from the repository root:
 
-1. Build the frontend into `marimo/_static` and the marimo wheel from this
-   checkout. The bundled `marimo-base` must match the frontend version. The
-   default lockfile pins a released `marimo-base`, so the spike must find how to
-   pin the local wheel. Local-wheel support is in `marimo/_export/local_wheels.py`.
-2. Run `marimo export html-wasm seed.py --mode edit --offline -o dist/`.
-   `seed.py` is the bundled demo notebook. Its PEP 723 dependencies decide
-   which packages are bundled.
+```sh
+make fe && make py
+python -B packages/chrome-extension/scripts/build.py
+```
+
+1. Build `marimo` and `marimo-base` wheels at the same `<version>+chromeext`
+   version using a temporary copy of the checkout, then install the `marimo`
+   wheel and Playwright into an isolated exporter venv.
+2. Start a loopback package index for the local `marimo-base` and run
+   `marimo export html-wasm seed.py --mode edit --offline --pypi-index-url ...`
+   into a temporary export directory. The seed's PEP 723 dependencies decide
+   which packages are bundled. The build downloads Chromium into temporary
+   storage unless `PLAYWRIGHT_BROWSERS_PATH` points to an existing installation.
 3. Post-process the export into `dist/sandbox/` for the CSP. Move each inline
    `<script>` into a file loaded with `<script src>`, and drop the `file:`
    warning. The sandbox page does allow inline scripts, but external files keep
    the extension auditable and the two pages consistent. The post-processor
    also replaces the main `<script type="module">` with `boot.js`, which
-   imports it after the handshake. A test asserts that no inline scripts remain.
-   The spike's `build_extension.py` already does the first part.
+   imports it after the handshake. The post-processor sets `AUTO_INSTANTIATE`
+   in the generated mount config so the seed runs in edit mode without a click.
+   This is a build-time setting, not a change to the editor's default.
 4. Add `sidepanel.html` and `panel.js`, `manifest.json`, the background worker,
    and icons.
 
@@ -135,11 +143,20 @@ extension bundler such as `@crxjs/vite-plugin`. The repo's
 `minimumReleaseAge` policy in `pnpm-workspace.yaml` would need an exemption,
 and the pipeline above does not need one.
 
+With pytest and Playwright installed in the development environment
+(`python -m playwright install chromium`), run:
+
+```sh
+python -m pytest packages/chrome-extension/scripts/test_build_extension.py
+python packages/chrome-extension/scripts/run_spike.py \
+  packages/chrome-extension/dist --shell-only
+```
+
 ### Notebook source and saving
 
-- `panel.js` in the parent holds the notebook in `chrome.storage.local`
-  (code and filename). On `ready` it answers with `init`. With nothing stored,
-  it sends the seed notebook, so the seed is only the first-run default.
+- For phase 2, the build embeds the exported seed into `panel.js`, and the
+  parent always sends it in `init`. Phase 3 will keep code and filename in
+  `chrome.storage.local` and use the seed only when nothing is stored.
 - The mount config is read synchronously, so the sandbox's `boot.js` writes
   the received code into `<marimo-code>` (URL-encoded, as the export does)
   before it imports the main module. Reading then needs no frontend change.
@@ -187,24 +204,29 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
   seed set fails, because there is no network fallback by design.
 - There is no terminal, no server-side AI, and no real filesystem. The
   virtual filesystem is in memory, so files written by cells are lost when the
-  panel closes. Only the notebook source persists.
+  panel closes. Notebook source persistence is planned for phase 3.
 - `mo.iframe` and other `__resizeIframe` outputs do not auto-size, because the
   sandbox's opaque origin blocks reading `contentWindow.document`.
 - Notebook output can run arbitrary script with `unsafe-eval` inside the
   sandbox. It cannot reach `chrome.*` or the extension's storage, which is the
   point of B, but it has network access to whatever the notebook asks for.
-- The side panel is narrow. The edit layout must be checked at 320 to 500 px.
+- The edit layout was checked at 320, 400, and 500 px by opening the panel
+  document in Chromium. The notebook and seed chart fit, but the left icon
+  rail takes up a noticeable share of the 320 px viewport. Code wraps more
+  often, and the floating controls overlap the right edge of cells while
+  scrolling. These editor layout issues are unchanged.
 - The bundle is large (tens of MB). Pyodide loads every time the panel opens,
   and it reloads when the panel is closed.
 
 ## Phases
 
 1. **Spike (done).** Chose option B. See [Spike](#spike).
-2. **Extension shell.** Package, build script, `sidepanel.html` and `panel.js`
+2. **Extension shell (done).** Package, build script, `sidepanel.html` and `panel.js`
    (iframe plus handshake with a hard-coded seed), sandbox manifest, background
    worker, CSP post-processing including `boot.js`. Promote the spike scripts
    (`build_wheels.py`, `local_index.py`, `build_extension.py`) into the
-   package build.
+   package build. Includes pytest coverage for the post-processor and an
+   unpacked Chromium smoke check for automatic seed execution.
 3. **Notebook I/O.** `chrome.storage.local` persistence in the parent, the
    `save` and `open` messages, the write-only file store in the frontend, and
    saving by download.
@@ -212,10 +234,7 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
    `postMessage` so iframes auto-size. Only general fixes that also help
    strict-CSP web hosting go in `frontend/src`.
 5. **Tests and docs.**
-   - Unit tests (Vitest) for the file store and the HTML post-processor.
-   - One Playwright test that launches Chromium with `--load-extension=dist`,
-     opens `sidepanel.html` directly, and runs a cell inside the sandbox
-     iframe. `run_spike.py` is the starting point.
+   - Unit tests (Vitest) for the file store.
    - A short section in `development_docs/pyodide.md`.
 
 ## Spike

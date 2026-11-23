@@ -9,7 +9,7 @@ Pass a URL instead of an extension directory to run the same checklist against
 a plain web page (the baseline).
 
 Usage: python run_spike.py <extension_dir | url> [--option {a,b}]
-       [--screenshot png]
+       [--shell-only] [--width pixels] [--screenshot png]
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -122,17 +123,27 @@ async def persistence(
 
 
 async def run(
-    target: str, option: str, screenshot: Path | None
+    target: str,
+    option: str,
+    screenshot: Path | None,
+    *,
+    shell_only: bool,
+    width: int,
 ) -> dict[str, Any]:
     is_url = target.startswith("http")
-    extension = None if is_url else Path(target).resolve()
+    extension = (
+        None if is_url else await asyncio.to_thread(Path(target).resolve)
+    )
     report = Report()
     with tempfile.TemporaryDirectory(prefix="spike-profile-") as profile:
         context = await launch(extension, Path(profile))
+        if shell_only:
+            await context.set_offline(True)
         if not is_url:
             ext_id = await extension_id(context)
             report.results["extension loads (service worker)"] = {"pass": True}
         page = await context.new_page()
+        await page.set_viewport_size({"width": width, "height": 900})
         page.on("console", lambda m: report.log(m.text))
         page.on("pageerror", lambda e: report.log(f"pageerror: {e}"))
         url = (
@@ -142,11 +153,19 @@ async def run(
         root = root_of(page, option)
 
         async def cell_runs() -> None:
-            await wait_for_kernel(report)
-            # Wasm edit mode does not run cells on load.
-            await root.locator('[data-testid="run-button"]').last.click()
+            if shell_only:
+                await root.locator(".cm-editor").first.wait_for(
+                    timeout=BOOT_TIMEOUT_MS
+                )
+                assert (
+                    await root.locator("body").evaluate("() => self.origin")
+                    == "null"
+                )
+            else:
+                await wait_for_kernel(report)
+                await root.locator('[data-testid="run-button"]').last.click()
             await root.get_by_text("slider value: 3").first.wait_for(
-                timeout=STEP_TIMEOUT_MS * 3
+                timeout=BOOT_TIMEOUT_MS
             )
 
         async def slider() -> None:
@@ -192,7 +211,7 @@ async def run(
             raise AssertionError(f"iframe was not resized: {height!r}")
 
         await report.check(BOOT_CHECK, cell_runs)
-        if report.results[BOOT_CHECK]["pass"]:
+        if not shell_only and report.results[BOOT_CHECK]["pass"]:
             await report.check("mo.ui slider", slider)
             await report.check("Altair chart renders", altair)
             await report.check("anywidget renders and syncs", anywidget)
@@ -218,7 +237,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("target")
     parser.add_argument("--option", choices=["a", "b"], default="a")
+    parser.add_argument("--shell-only", action="store_true")
+    parser.add_argument("--width", type=int, default=500)
     parser.add_argument("--screenshot", type=Path)
     args = parser.parse_args()
-    results = asyncio.run(run(args.target, args.option, args.screenshot))
-    print(json.dumps(results, indent=2))
+    if args.shell_only and args.target.startswith("http"):
+        parser.error("--shell-only requires an unpacked extension directory")
+    results = asyncio.run(
+        run(
+            args.target,
+            "b" if args.shell_only else args.option,
+            args.screenshot,
+            shell_only=args.shell_only,
+            width=args.width,
+        )
+    )
+    sys.stdout.write(json.dumps(results, indent=2) + "\n")
+    if args.shell_only and not results[BOOT_CHECK]["pass"]:
+        sys.exit(1)

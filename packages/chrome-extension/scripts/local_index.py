@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import html
 import sys
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 PYPI_SIMPLE = "https://pypi.org/simple"
 
@@ -60,10 +66,24 @@ def make_handler(wheel_dir: Path) -> type[BaseHTTPRequestHandler]:
                     pass
             self.send_error(404)
 
-        def log_message(self, format: str, *args: object) -> None:
+        def log_message(self, _format: str, *_args: object) -> None:
             return
 
     return Handler
+
+
+@contextmanager
+def local_index(wheel_dir: Path) -> Iterator[str]:
+    with ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_handler(wheel_dir)
+    ) as server:
+        thread = Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}"
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 if __name__ == "__main__":
@@ -71,5 +91,6 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer(
         ("127.0.0.1", port), make_handler(Path(sys.argv[1]))
     )
-    print(f"Serving on http://127.0.0.1:{port}", flush=True)
+    sys.stdout.write(f"Serving on http://127.0.0.1:{port}\n")
+    sys.stdout.flush()
     server.serve_forever()
