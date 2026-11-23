@@ -57,7 +57,7 @@ WebAssembly is allowed. These are blocked, and each one affects marimo today:
 Pyodide must also work with only `'wasm-unsafe-eval'`. The spike must confirm
 this.
 
-### Hosting options (decided by the spike)
+### Hosting options (decided by the spike: B)
 
 **A. Side panel is a normal extension page.**
 - Pros: full `chrome.*` APIs, IndexedDB, and same-origin workers.
@@ -71,25 +71,43 @@ this.
   work as they do on the web.
 - Cons: the sandbox has an opaque origin. It has no `chrome.*` APIs, so the
   parent must handle storage through `postMessage`. IndexedDB and
-  `localStorage` probably throw, which breaks `WasmFileSystem` persistence.
-  `new Worker(chrome-extension://…)` is cross-origin, so workers would have to
-  be built from blobs.
+  `localStorage` throw, which breaks `WasmFileSystem` persistence. marimo
+  already falls back to in-memory storage, and workers start through its
+  existing `data:` wrapper once the sandbox CSP allows it.
 
-Prefer A if the spike shows the broken outputs can be fixed with small, general
-frontend changes that are also useful for strict-CSP web deployments. Otherwise
-use B.
+The rule was: prefer A if the broken outputs can be fixed with small, general
+frontend changes that also help strict-CSP web deployments. They cannot (see
+[Spike](#spike)), so the extension uses B.
 
-## Architecture (option A shown)
+## Architecture (option B)
 
 ```
 toolbar action ─► background service worker
                    - sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
-side panel ─► sidepanel.html  (output of `marimo export html-wasm --offline`, post-processed)
-               ├─ boot.js         (was the inline scripts; reads the notebook from chrome.storage)
-               ├─ assets/…        (frontend build)
-               ├─ pyodide/ packages/ lockfile/   (offline runtime)
-               └─ module worker ─► Pyodide ─► marimo-base from packages/
+side panel ─► sidepanel.html  (extension page, strict CSP, has chrome.* APIs)
+               ├─ panel.js    (reads the notebook from chrome.storage, answers the sandbox)
+               └─ <iframe src="sandbox/index.html">
+                    sandboxed page (opaque origin, relaxed CSP, no chrome.*)
+                    output of `marimo export html-wasm --offline`, post-processed
+                    ├─ boot.js         (waits for the parent's notebook, then loads the app)
+                    ├─ inline-N.js     (the export's former inline scripts)
+                    ├─ assets/…        (frontend build)
+                    ├─ pyodide/ packages/ lockfile/   (offline runtime)
+                    └─ module worker ─► Pyodide ─► marimo-base from packages/
 ```
+
+The two pages talk only through `postMessage`. The parent owns persistence, and
+the sandbox owns everything that executes notebook output.
+
+Messages (all validated: the parent checks `event.source` is its iframe, and
+the sandbox checks `event.source === parent`):
+
+| Direction | Message | Purpose |
+| --- | --- | --- |
+| sandbox → parent | `ready` | `boot.js` is loaded and waits for the notebook |
+| parent → sandbox | `init { code, filename }` | The notebook to open, from `chrome.storage.local` or the seed |
+| sandbox → parent | `save { code }` | The notebook changed, so persist it |
+| parent → sandbox | `open { code, filename }` | The user picked a `.py` file |
 
 ### Build pipeline (`packages/chrome-extension`)
 
@@ -102,10 +120,15 @@ A new pnpm workspace package (the `packages/*` glob already covers it).
 2. Run `marimo export html-wasm seed.py --mode edit --offline -o dist/`.
    `seed.py` is the bundled demo notebook. Its PEP 723 dependencies decide
    which packages are bundled.
-3. Post-process `dist/` for the CSP. Move each inline `<script>` into a file
-   loaded with `<script src>`, and drop the `file:` warning. A test asserts that
-   no inline scripts remain.
-4. Add `manifest.json`, the background worker, and icons.
+3. Post-process the export into `dist/sandbox/` for the CSP. Move each inline
+   `<script>` into a file loaded with `<script src>`, and drop the `file:`
+   warning. The sandbox page does allow inline scripts, but external files keep
+   the extension auditable and the two pages consistent. The post-processor
+   also replaces the main `<script type="module">` with `boot.js`, which
+   imports it after the handshake. A test asserts that no inline scripts remain.
+   The spike's `build_extension.py` already does the first part.
+4. Add `sidepanel.html` and `panel.js`, `manifest.json`, the background worker,
+   and icons.
 
 `dist/` is loaded unpacked through `chrome://extensions`. Do not add an
 extension bundler such as `@crxjs/vite-plugin`. The repo's
@@ -114,19 +137,26 @@ and the pipeline above does not need one.
 
 ### Notebook source and saving
 
-- Add an extension file store backed by `chrome.storage.local`. It holds the
-  current notebook's code and filename.
-- Insert it at index 0 of `notebookFileStore` so it wins over `<marimo-code>`.
-  The seed notebook then acts only as the first-run default.
-- `chrome.storage` is async and the mount config is read synchronously.
-  `boot.js` should therefore await storage before it loads the main module.
-- To open a notebook, use `<input type="file" accept=".py">` in the panel and
-  write the result into the store. To save, download a `.py` file.
-- Enable this only when the page is an extension page, for example with a
-  `data-host="chrome-extension"` attribute on `<marimo-wasm>`. Do not sniff
-  `globalThis.chrome`.
-- Request the `unlimitedStorage` permission. Pyodide's IndexedDB filesystem and
-  large notebooks can exceed the default quota.
+- `panel.js` in the parent holds the notebook in `chrome.storage.local`
+  (code and filename). On `ready` it answers with `init`. With nothing stored,
+  it sends the seed notebook, so the seed is only the first-run default.
+- The mount config is read synchronously, so the sandbox's `boot.js` writes
+  the received code into `<marimo-code>` (URL-encoded, as the export does)
+  before it imports the main module. Reading then needs no frontend change.
+  Do not insert a `postMessage` store at index 0 of `notebookFileStore`:
+  `CompositeFileStore.readFile` returns the first truthy value, and a
+  `Promise<null>` is truthy, so an async store would always win.
+- Saving does need a frontend change: a write-only `FileStore` that posts
+  `save` to the parent, added to `notebookFileStore` when the page asks for it.
+  Enable it with `data-host="chrome-extension"` on `<marimo-wasm>`, not by
+  sniffing `globalThis.chrome` (it does not exist in the sandbox).
+- To open a notebook, the parent has an `<input type="file" accept=".py">`,
+  stores the result, and sends `open`. The sandbox reloads the notebook. To
+  save to disk, the user downloads a `.py` file.
+- Request `unlimitedStorage` for large notebooks.
+- Files written by cells are not persisted in the first version. The sandbox
+  uses Pyodide's in-memory filesystem, as marimo already does for opaque
+  origins. A later change could mirror `/marimo` through the same bridge.
 
 ### Manifest (sketch)
 
@@ -138,46 +168,54 @@ and the pipeline above does not need one.
   "background": { "service_worker": "background.js", "type": "module" },
   "side_panel": { "default_path": "sidepanel.html" },
   "action": { "default_title": "Open marimo" },
+  "sandbox": { "pages": ["sandbox/index.html"] },
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data:; worker-src 'self' blob: data:; object-src 'self'"
   }
 }
 ```
+
+The sandbox CSP is the one the spike verified. Do not add `allow-same-origin`:
+Chrome then refuses to load the extension. The sandboxed page can load its own
+extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
+`chrome.runtime`.
 
 ## Known limitations
 
 - Only bundled packages work. A notebook that opens a package outside the
   seed set fails, because there is no network fallback by design.
 - There is no terminal, no server-side AI, and no real filesystem. The
-  virtual filesystem persists in IndexedDB.
+  virtual filesystem is in memory, so files written by cells are lost when the
+  panel closes. Only the notebook source persists.
+- `mo.iframe` and other `__resizeIframe` outputs do not auto-size, because the
+  sandbox's opaque origin blocks reading `contentWindow.document`.
+- Notebook output can run arbitrary script with `unsafe-eval` inside the
+  sandbox. It cannot reach `chrome.*` or the extension's storage, which is the
+  point of B, but it has network access to whatever the notebook asks for.
 - The side panel is narrow. The edit layout must be checked at 320 to 500 px.
 - The bundle is large (tens of MB). Pyodide loads every time the panel opens,
   and it reloads when the panel is closed.
 
 ## Phases
 
-1. **Spike (go/no-go).** Export the seed notebook with `--offline` and load it
-   as option A. Record what works:
-   - Pyodide boots with only `'wasm-unsafe-eval'`.
-   - The worker starts.
-   - A cell runs.
-   - `mo.ui` widgets work.
-   - An Altair chart renders.
-   - An anywidget renders.
-   - `mo.Html` with a script renders.
-   - The IndexedDB filesystem persists.
-
-   If key items fail, try the same with option B. Write the results into this
-   document and choose an option.
-2. **Extension shell.** Package, build script, manifest, background worker,
-   CSP post-processing.
-3. **Notebook I/O.** Extension file store, opening a file, saving by download.
-4. **CSP fixes.** Only for option A, and only general fixes that also help
-   strict-CSP web hosting.
+1. **Spike (done).** Chose option B. See [Spike](#spike).
+2. **Extension shell.** Package, build script, `sidepanel.html` and `panel.js`
+   (iframe plus handshake with a hard-coded seed), sandbox manifest, background
+   worker, CSP post-processing including `boot.js`. Promote the spike scripts
+   (`build_wheels.py`, `local_index.py`, `build_extension.py`) into the
+   package build.
+3. **Notebook I/O.** `chrome.storage.local` persistence in the parent, the
+   `save` and `open` messages, the write-only file store in the frontend, and
+   saving by download.
+4. **Sandbox polish.** Replace the `__resizeIframe` `contentWindow` read with a
+   `postMessage` so iframes auto-size. Only general fixes that also help
+   strict-CSP web hosting go in `frontend/src`.
 5. **Tests and docs.**
    - Unit tests (Vitest) for the file store and the HTML post-processor.
    - One Playwright test that launches Chromium with `--load-extension=dist`,
-     opens `sidepanel.html` directly, and runs a cell.
+     opens `sidepanel.html` directly, and runs a cell inside the sandbox
+     iframe. `run_spike.py` is the starting point.
    - A short section in `development_docs/pyodide.md`.
 
 ## Spike
@@ -282,17 +320,9 @@ notebook source already goes through the parent (`chrome.storage.local`), so
 that part is on the plan. Persisting arbitrary files under `/marimo` is new work
 and can start as "not supported".
 
-Consequences for the design above:
-
-- The architecture diagram changes: `sidepanel.html` is a thin page that embeds
-  the export at `sandbox/index.html`, listed under `manifest.sandbox.pages`.
-- `boot.js` and `chrome.storage` move to the parent. The file store in the
-  sandbox is a `postMessage` client.
-- The manifest needs a `sandbox` CSP with `'unsafe-inline' 'unsafe-eval'
-  blob: data:` and `worker-src 'self' blob: data:`.
-- Phase 4 shrinks. Only the `__resizeIframe` height fix (use
-  `postMessage` instead of reading `contentWindow.document`) remains, and it is
-  cosmetic.
+The design sections above are written for B. Notable changes from the first
+proposal: the notebook is read through `<marimo-code>` instead of a store at
+index 0, and Phase 4 shrank to the iframe resize fix.
 
 ## Out of scope (for now)
 
