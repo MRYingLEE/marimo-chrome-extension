@@ -17,6 +17,8 @@ const {
   mockNotebookSubscribe,
   mockNotebookUnsubscribe,
   workerState,
+  mockInsert,
+  mockParentStore,
 } = vi.hoisted(() => ({
   mockBridge: vi.fn(),
   mockNotebookReadFile: vi.fn(),
@@ -38,6 +40,8 @@ const {
   mockNotebookSubscribe: vi.fn(),
   mockNotebookUnsubscribe: vi.fn(),
   workerState: { interruptBuffer: undefined as Uint8Array | undefined },
+  mockInsert: vi.fn(),
+  mockParentStore: { readFile: vi.fn(), saveFile: vi.fn() },
 }));
 
 // Mock browser globals before any imports
@@ -100,8 +104,13 @@ vi.mock("@/core/wasm/utils", () => ({
 }));
 
 vi.mock("@/core/wasm/store", () => ({
+  createParentSaveFileStore: vi.fn(() => mockParentStore),
   fallbackFileStore: { readFile: vi.fn(), saveFile: vi.fn() },
-  notebookFileStore: { readFile: mockNotebookReadFile, saveFile: vi.fn() },
+  notebookFileStore: {
+    readFile: mockNotebookReadFile,
+    saveFile: vi.fn(),
+    insert: mockInsert,
+  },
 }));
 
 // Import after all mocks are set up
@@ -109,7 +118,11 @@ import { store } from "@/core/state/jotai";
 import { initialModeAtom } from "@/core/mode";
 import type { NotebookReplica } from "@/core/notebook/replica";
 import { activeNotebookReplicaAtom } from "@/core/session/active-notebook";
-import { fallbackFileStore, notebookFileStore } from "../store";
+import {
+  createParentSaveFileStore,
+  fallbackFileStore,
+  notebookFileStore,
+} from "../store";
 import { getWasmWorkerName, PyodideBridge } from "../bridge";
 
 beforeEach(() => {
@@ -441,6 +454,47 @@ it("raises the interrupt buffer once a run cancelled while queued starts", async
     store.set(activeNotebookReplicaAtom, null);
     store.set(initialModeAtom, undefined);
   }
+});
+
+describe("PyodideBridge parent save store", () => {
+  const renderWasmHost = (host: string | undefined) => {
+    document.body.replaceChildren();
+    const element = document.createElement("marimo-wasm");
+    if (host !== undefined) {
+      element.dataset.host = host;
+    }
+    document.body.append(element);
+  };
+
+  const constructBridge = () => {
+    Reflect.deleteProperty(window, "_marimo_private_PyodideBridge");
+    void PyodideBridge.INSTANCE;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it("inserts the parent save store first for the chrome-extension host", () => {
+    renderWasmHost("chrome-extension");
+    constructBridge();
+    expect(createParentSaveFileStore).toHaveBeenCalledWith(window.parent);
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockInsert).toHaveBeenCalledWith(0, mockParentStore);
+  });
+
+  it.each([undefined, "other"])(
+    "does not insert the parent save store for host %s",
+    (host) => {
+      renderWasmHost(host);
+      constructBridge();
+      expect(mockInsert).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("getWasmWorkerName", () => {

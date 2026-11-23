@@ -99,17 +99,24 @@ describe("createParentSaveFileStore", () => {
     );
   });
 
-  it("never supplies code on read", () => {
+  it("never supplies code or posts to the parent on read", () => {
     const parent = { postMessage: vi.fn() };
     expect(createParentSaveFileStore(parent).readFile()).toBeNull();
+    expect(parent.postMessage).not.toHaveBeenCalled();
   });
 
-  it("does not change read precedence when placed first", () => {
+  it("falls through to the real stores when placed first", () => {
+    store.set(codeAtom, undefined);
+    const element = document.createElement("marimo-code");
+    element.textContent = "marimo-code element";
+    document.body.replaceChildren(element);
+
     const parent = { postMessage: vi.fn() };
     const composite = new CompositeFileStore([
       createParentSaveFileStore(parent),
-      { readFile: () => "stored", saveFile: vi.fn() },
+      mountConfigFileStore,
+      domElementFileStore,
     ]);
-    expect(composite.readFile()).toBe("stored");
+    expect(composite.readFile()).toBe("marimo-code element");
   });
 });

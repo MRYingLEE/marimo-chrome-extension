@@ -1,9 +1,10 @@
 # Design: marimo in a Chrome side panel
 
-Status: phases 1 through 4 are implemented. The [spike](#spike) chose option B.
+Status: all five phases are implemented. The [spike](#spike) chose option B.
 The extension restores the notebook from `chrome.storage.local`, opens local
 `.py` files, saves by download, and auto-sizes `mo.iframe` outputs. Phase 5
-(tests and docs) is still planned.
+added Vitest coverage for the parent save store and the offline runtime notes
+in [`pyodide.md`](pyodide.md).
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
 in the browser, with no marimo server and no network access at runtime.
@@ -290,9 +291,11 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
    The inline `onload` handlers and the `index.html` resizer were removed.
    See [Iframe resizing](#iframe-resizing) and
    [Phase 4 checks](#phase-4-checks-option-b-unpacked-chromium).
-5. **Tests and docs.**
-   - Unit tests (Vitest) for the file store.
-   - A short section in `development_docs/pyodide.md`.
+5. **Tests and docs (done).**
+   - Unit tests (Vitest) for the file store, in `store.test.ts` and the
+     `data-host` insertion in `bridge.test.ts`.
+   - A section in [`pyodide.md`](pyodide.md) on the offline runtime and the
+     extension's use of it.
 
 ## Spike
 
