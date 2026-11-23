@@ -1,6 +1,7 @@
 # Design: marimo in a Chrome side panel
 
-Status: proposal. Nothing here is implemented yet.
+Status: proposal. Phase 1 (the spike) is done and chose option B, see [Spike](#spike).
+Nothing else is implemented yet.
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
 in the browser, with no marimo server and no network access at runtime.
@@ -178,6 +179,120 @@ and the pipeline above does not need one.
    - One Playwright test that launches Chromium with `--load-extension=dist`,
      opens `sidepanel.html` directly, and runs a cell.
    - A short section in `development_docs/pyodide.md`.
+
+## Spike
+
+Date: 2026-11-23. Playwright Chromium (build 1255, `channel="chromium"`, headless),
+Pyodide from the bundled export, Playwright's `--load-extension`. The
+side panel cannot be driven by Playwright, so each run opens
+`chrome-extension://<id>/sidepanel.html` in a tab. That page is the same document
+the side panel hosts, with the same CSP.
+
+Seed notebook: [`packages/chrome-extension/seed.py`](../packages/chrome-extension/seed.py).
+Scripts, all under `packages/chrome-extension/scripts/`:
+`build_wheels.py`, `local_index.py`, `build_extension.py`, `run_spike.py`.
+
+### Pinning the local wheel (answers the open question in "Build pipeline")
+
+`marimo export html-wasm --offline` always installs `marimo-base==<exporter's
+__version__>` from the package index first, so a local wheel with the same
+version as a released one is shadowed by PyPI. The pipeline that works:
+
+1. `build_wheels.py` builds `marimo` (with the frontend) and `marimo-base`
+   wheels from this checkout, both versioned `<version>+chromeext`.
+2. Install the `marimo` wheel into the environment that runs the exporter, so
+   `__version__` is the local version.
+3. `local_index.py` serves the `marimo-base` wheel and proxies every other
+   project to PyPI. Pass it as `--pypi-index-url http://127.0.0.1:<port>`.
+
+The exported lockfile then contains `marimo-base 0.25.2+chromeext` and
+`__MARIMO_MOUNT_CONFIG__.version` is the same, so the runtime matches the
+frontend. The export is 58 MB (Pyodide, 52 packages).
+
+### Results
+
+The same checklist ran against the plain web export (served over HTTP) as a
+baseline, option A, and option B. The panel for B is a thin extension page with
+the export in a sandboxed iframe.
+
+| Item | Web baseline | A: extension page | B: sandboxed page |
+| --- | --- | --- | --- |
+| Extension loads, service worker runs | n/a | pass | pass |
+| Pyodide boots with only `'wasm-unsafe-eval'`, worker starts, cell runs | pass | pass | pass (needs `worker-src data: blob:`) |
+| `mo.ui` slider | pass | pass | pass |
+| Altair chart (Vega expression) | pass | **fail** | pass |
+| anywidget | pass | **fail** | pass |
+| `mo.Html` with `<script src>` | pass | pass | pass |
+| `mo.iframe` with an inline script | pass | **fail** | pass |
+| Inline `onload` handler (`__resizeIframe`) | pass | **fail** | **fail** |
+| Pyodide FS persists in IndexedDB across reload | pass | pass | **fail** |
+
+CSP errors seen in A:
+
+- `[react-vega] Error creating view: EvalError: Evaluating a string as
+  JavaScript violates ... 'unsafe-eval' is not an allowed source of script`.
+- `Failed to fetch dynamically imported module: data:text/javascript;base64,...`
+  (anywidget ESM).
+- `Executing inline script violates ... script-src 'self' 'wasm-unsafe-eval'`
+  and `Executing inline event handler violates ...` (the `mo.iframe` `srcdoc`
+  and its `onload`).
+
+Errors seen in B:
+
+- `Creating a worker from 'data:application/javascript,import ...' violates the
+  following Content Security Policy directive` with the default sandbox CSP.
+  marimo's cross-origin worker fallback uses a `data:` URL, so the sandbox CSP
+  needs `worker-src 'self' blob: data:` and `script-src ... blob: data:`.
+- `SecurityError: Failed to read the 'localStorage' property ... sandboxed and
+  lacks the 'allow-same-origin' flag`. marimo falls back to in-memory storage
+  and the panel works.
+- `Blocked a frame with origin "null" from accessing a cross-origin frame`.
+  `__resizeIframe` reads `contentWindow.document`, so `mo.iframe` does not
+  auto-size.
+- Adding `allow-same-origin` to the sandbox CSP makes Chrome refuse to load the
+  extension, so B cannot get IndexedDB that way.
+
+Other findings:
+
+- Wasm edit mode does not run cells on load (`auto_instantiate` is false). The
+  panel needs a "run all" or an `auto_instantiate` setting in the mount config.
+- marimo ignores inline `<script>` in `mo.Html`, on the web too. Only
+  `<script src>` loads. `mo.iframe` is the supported way to run inline scripts.
+- Pyodide's IDBFS is synced only on file operations, not on cell writes.
+  `WasmFileSystem.mountFS` already uses an in-memory FS when `origin === "null"`,
+  which is what B hits.
+- Not tested: whether `ast: true` in the Vega embed options (it uses
+  `vega-interpreter`, already a transitive dependency through `vega-embed`)
+  fixes Altair in A. Even if it does, it would not help anywidget or
+  `mo.iframe`.
+
+### Decision
+
+**Option B**, the sandboxed page. A fails on anywidget and `mo.iframe` because
+both need to execute code that only exists at runtime. MV3 `extension_pages`
+CSP cannot allow `data:`, `blob:` or `unsafe-eval`, so no frontend change can
+fix them. The decision rule needs fixes that are small and general, and these
+are not. A Vega interpreter fix would only cover one of the four failures.
+
+B costs us IndexedDB. The sandbox has an opaque origin, so Pyodide uses its
+in-memory filesystem and files written by cells are lost when the panel
+closes. Phase 3 must therefore add a persistence bridge: the parent extension
+page owns storage and the sandbox talks to it through `postMessage`. The
+notebook source already goes through the parent (`chrome.storage.local`), so
+that part is on the plan. Persisting arbitrary files under `/marimo` is new work
+and can start as "not supported".
+
+Consequences for the design above:
+
+- The architecture diagram changes: `sidepanel.html` is a thin page that embeds
+  the export at `sandbox/index.html`, listed under `manifest.sandbox.pages`.
+- `boot.js` and `chrome.storage` move to the parent. The file store in the
+  sandbox is a `postMessage` client.
+- The manifest needs a `sandbox` CSP with `'unsafe-inline' 'unsafe-eval'
+  blob: data:` and `worker-src 'self' blob: data:`.
+- Phase 4 shrinks. Only the `__resizeIframe` height fix (use
+  `postMessage` instead of reading `contentWindow.document`) remains, and it is
+  cosmetic.
 
 ## Out of scope (for now)
 
