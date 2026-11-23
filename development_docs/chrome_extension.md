@@ -1,7 +1,8 @@
 # Design: marimo in a Chrome side panel
 
-Status: phases 1 and 2 are implemented. The [spike](#spike) chose option B.
-The extension shell runs the bundled seed; notebook I/O is still planned.
+Status: phases 1, 2, and 3 are implemented. The [spike](#spike) chose option B.
+The extension restores the notebook from `chrome.storage.local`, opens local
+`.py` files, and saves by download. Phase 4 (iframe resizing) is still planned.
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
 in the browser, with no marimo server and no network access at runtime.
@@ -85,7 +86,8 @@ frontend changes that also help strict-CSP web deployments. They cannot (see
 toolbar action ─► background service worker
                    - sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
 side panel ─► sidepanel.html  (extension page, strict CSP, has chrome.* APIs)
-               ├─ panel.js    (sends the bundled seed; phase 3 adds chrome.storage)
+               ├─ panel.js    (the only code that uses chrome.*: restores the notebook
+               │               from chrome.storage.local, or the seed; saves; downloads)
                └─ <iframe src="sandbox/index.html">
                     sandboxed page (opaque origin, relaxed CSP, no chrome.*)
                     output of `marimo export html-wasm --offline`, post-processed
@@ -97,17 +99,20 @@ side panel ─► sidepanel.html  (extension page, strict CSP, has chrome.* APIs
 ```
 
 The two pages talk only through `postMessage`. The sandbox owns everything
-that executes notebook output. The parent will own persistence in phase 3.
+that executes notebook output. The parent owns persistence and is the only
+place that calls `chrome.*`.
 
-Messages (all validated: the parent checks `event.source` is its iframe, and
-the sandbox checks `event.source === parent`):
+Messages. The parent accepts a message only when `event.source` is its iframe
+and `event.origin` is `"null"`. The sandbox accepts a message only when
+`event.source` is its parent and the payload has the expected string fields:
 
 | Direction | Message | Purpose |
 | --- | --- | --- |
 | sandbox → parent | `ready` | `boot.js` is loaded and waits for the notebook |
-| parent → sandbox | `init { code, filename }` | The notebook to open, from `chrome.storage.local` or the seed |
-| sandbox → parent | `save { code }` | Phase 3: the notebook changed, so persist it |
-| parent → sandbox | `open { code, filename }` | Phase 3: the user picked a `.py` file |
+| parent → sandbox | `init { code, filename }` | Sent once per sandbox load. The notebook from `chrome.storage.local`, or the seed |
+| sandbox → parent | `save { code }` | The notebook changed, so the parent stores it |
+| parent → sandbox | `open { code, filename }` | The user picked a `.py` file. The sandbox asks for a reload |
+| sandbox → parent | `reload` | The sandbox cannot reload itself, so the parent sets `frame.src` again |
 
 ### Build pipeline (`packages/chrome-extension`)
 
@@ -154,26 +159,43 @@ python packages/chrome-extension/scripts/run_spike.py \
 
 ### Notebook source and saving
 
-- For phase 2, the build embeds the exported seed into `panel.js`, and the
-  parent always sends it in `init`. Phase 3 will keep code and filename in
-  `chrome.storage.local` and use the seed only when nothing is stored.
+- Phase 3 keeps the code and filename in `chrome.storage.local` under the
+  key `notebook`, as `{ code, filename }`. On startup `panel.js` reads that
+  key and falls back to the bundled seed when nothing valid is stored.
 - The mount config is read synchronously, so the sandbox's `boot.js` writes
   the received code into `<marimo-code>` (URL-encoded, as the export does)
-  before it imports the main module. Reading then needs no frontend change.
-  Do not insert a `postMessage` store at index 0 of `notebookFileStore`:
-  `CompositeFileStore.readFile` returns the first truthy value, and a
-  `Promise<null>` is truthy, so an async store would always win.
-- Saving does need a frontend change: a write-only `FileStore` that posts
-  `save` to the parent, added to `notebookFileStore` when the page asks for it.
-  Enable it with `data-host="chrome-extension"` on `<marimo-wasm>`, not by
-  sniffing `globalThis.chrome` (it does not exist in the sandbox).
-- To open a notebook, the parent has an `<input type="file" accept=".py">`,
-  stores the result, and sends `open`. The sandbox reloads the notebook. To
-  save to disk, the user downloads a `.py` file.
-- Request `unlimitedStorage` for large notebooks.
+  before it imports the main module. Reading therefore does not go through
+  a frontend store.
+- Saving uses a write-only `FileStore` in the frontend
+  ([`createParentSaveFileStore`](../frontend/src/core/wasm/store.ts)). Its
+  `saveFile` posts `save { code }` to the parent, and its `readFile` returns
+  `null` synchronously. It is inserted at index 0 of `notebookFileStore` only
+  when `<marimo-wasm data-host="chrome-extension">` is set, which the build
+  adds to the sandbox page. Detection uses the attribute, not
+  `globalThis.chrome`, which does not exist in the sandbox. The store never
+  returns code, so read precedence and ordinary WASM exports are unchanged.
+  Do not make this store async, because a `Promise<null>` is truthy and would
+  win in `CompositeFileStore.readFile`.
+- Autosave is forced on for this host. WASM exports set
+  `save.autosave = "off"` ([`exporter.py`](../marimo/_export/exporter.py)),
+  and the static Save button is hidden at the 500 px sidepanel width.
+  `bridge.ts` therefore sets `autosave: "after_delay"` on `userConfigAtom`
+  only for `data-host="chrome-extension"`, which the autosave hook reads.
+- The parent opens a file from `<input type="file" accept=".py">`, rejects
+  other extensions, stores the result, and sends `open`. The sandbox asks the
+  parent to reload the frame, and the reloaded sandbox receives the new
+  notebook through `init`. The Download button saves the current source as a
+  Blob with the notebook's filename.
+- Late saves: a `save` that the previous notebook's sandbox sends after `open`
+  must not overwrite the new notebook. The parent sets a `reloading` flag
+  when it sends `open`, drops `save` messages while it is set, and clears it
+  when the reloaded sandbox reports `ready`. This relies on `postMessage`
+  ordering between the parent and the same frame.
+- The manifest requests `unlimitedStorage` for large notebooks.
 - Files written by cells are not persisted in the first version. The sandbox
   uses Pyodide's in-memory filesystem, as marimo already does for opaque
   origins. A later change could mirror `/marimo` through the same bridge.
+
 
 ### Manifest (sketch)
 
@@ -204,7 +226,9 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
   seed set fails, because there is no network fallback by design.
 - There is no terminal, no server-side AI, and no real filesystem. The
   virtual filesystem is in memory, so files written by cells are lost when the
-  panel closes. Notebook source persistence is planned for phase 3.
+  panel closes. The notebook source itself persists in `chrome.storage.local`.
+- Opening a file replaces the stored notebook. There is no undo, and there is
+  no multi-notebook support.
 - `mo.iframe` and other `__resizeIframe` outputs do not auto-size, because the
   sandbox's opaque origin blocks reading `contentWindow.document`.
 - Notebook output can run arbitrary script with `unsafe-eval` inside the
@@ -227,9 +251,10 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
    (`build_wheels.py`, `local_index.py`, `build_extension.py`) into the
    package build. Includes pytest coverage for the post-processor and an
    unpacked Chromium smoke check for automatic seed execution.
-3. **Notebook I/O.** `chrome.storage.local` persistence in the parent, the
-   `save` and `open` messages, the write-only file store in the frontend, and
-   saving by download.
+3. **Notebook I/O (done).** `chrome.storage.local` persistence in the parent,
+   the `init`, `save`, `open`, and `reload` messages, the write-only file store
+   in the frontend, the `.py` picker, and saving by download. See
+   [Notebook source and saving](#notebook-source-and-saving).
 4. **Sandbox polish.** Replace the `__resizeIframe` `contentWindow` read with a
    `postMessage` so iframes auto-size. Only general fixes that also help
    strict-CSP web hosting go in `frontend/src`.
@@ -323,6 +348,31 @@ Other findings:
   fixes Altair in A. Even if it does, it would not help anywidget or
   `mo.iframe`.
 
+### Phase 3 checks (option B, unpacked Chromium)
+
+`run_spike.py dist --option b` on the phase 3 build. Each run uses a new
+profile. The phase 3 checks all pass:
+
+| Check | Result |
+| --- | --- |
+| First run falls back to the bundled seed | pass |
+| Opens a local `.py` file | pass |
+| Edit is saved to `chrome.storage.local` | pass |
+| Edit is restored after reload | pass |
+| Download saves the current source with its filename | pass |
+
+Phase 2-era checks in the same run: the slider step fails (timeout waiting for
+`slider value: 4`), the inline `onload` iframe resize fails (as in the spike
+table), and "filesystem cell writes file" fails (timeout waiting for
+`run count persisted on disk: 1`). The IndexedDB check passes. At
+`de4497d78`, the same harness gives the same results for the slider, iframe
+resize, and filesystem checks. These failures predate phase 3. The slider
+result contradicts the B column above. Its cause is not yet known.
+
+Console output in B: the `localStorage` `SecurityError` from
+`react-resizable-panels`, and `Blocked a frame with origin "null"`. Both are
+known and do not affect the phase 3 checks.
+
 ### Decision
 
 **Option B**, the sandboxed page. A fails on anywidget and `mo.iframe` because
@@ -333,11 +383,10 @@ are not. A Vega interpreter fix would only cover one of the four failures.
 
 B costs us IndexedDB. The sandbox has an opaque origin, so Pyodide uses its
 in-memory filesystem and files written by cells are lost when the panel
-closes. Phase 3 must therefore add a persistence bridge: the parent extension
+closes. Phase 3 therefore added a persistence bridge: the parent extension
 page owns storage and the sandbox talks to it through `postMessage`. The
-notebook source already goes through the parent (`chrome.storage.local`), so
-that part is on the plan. Persisting arbitrary files under `/marimo` is new work
-and can start as "not supported".
+notebook source goes through the parent (`chrome.storage.local`). Persisting
+arbitrary files under `/marimo` is new work and is still not supported.
 
 The design sections above are written for B. Notable changes from the first
 proposal: the notebook is read through `<marimo-code>` instead of a store at

@@ -28,6 +28,7 @@ MODULE_SCRIPT = re.compile(
 MARIMO_CODE = re.compile(
     r"(<marimo-code\b[^>]*>)(.*?)(</marimo-code>)", re.DOTALL
 )
+MARIMO_WASM = re.compile(r"<marimo-wasm\b")
 FILE_WARNING = "window.location.protocol === 'file:'"
 ICONS = {
     "16": "favicon-16x16.png",
@@ -96,6 +97,15 @@ def add_handshake(html: str, page_dir: Path, out_dir: Path) -> str:
     return MARIMO_CODE.sub(r"\1\3", html, count=1)
 
 
+def add_chrome_extension_host(html: str) -> str:
+    # Enables the frontend's write-only save store, which only exists in this build.
+    if len(MARIMO_WASM.findall(html)) != 1:
+        raise ValueError("Expected one <marimo-wasm> element")
+    return MARIMO_WASM.sub(
+        '<marimo-wasm data-host="chrome-extension"', html, count=1
+    )
+
+
 def manifest(option: str) -> dict[str, object]:
     csp = {
         "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
@@ -139,7 +149,8 @@ def build(export_dir: Path, out_dir: Path, option: str = "b") -> None:
         (page_dir / "sidepanel.html").write_text(html, encoding="utf-8")
     else:
         index.write_text(
-            add_handshake(html, page_dir, out_dir), encoding="utf-8"
+            add_chrome_extension_host(add_handshake(html, page_dir, out_dir)),
+            encoding="utf-8",
         )
         shutil.copyfile(PACKAGE / "sidepanel.html", out_dir / "sidepanel.html")
     shutil.copyfile(PACKAGE / "spike-script.js", page_dir / "spike-script.js")

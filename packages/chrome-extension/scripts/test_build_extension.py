@@ -2,7 +2,8 @@
 from html.parser import HTMLParser
 from pathlib import Path
 
-from build_extension import build
+import pytest
+from build_extension import add_chrome_extension_host, build
 
 
 class Scripts(HTMLParser):
@@ -33,6 +34,7 @@ def test_sandbox_export_uses_only_external_scripts_and_defers_entrypoint(
         <script type="module" crossorigin src="./assets/main.js"></script>
         <script>if (window.location.protocol === 'file:') alert('warning');</script>
         <marimo-code hidden="">print%281%29</marimo-code>
+        <marimo-wasm hidden=""></marimo-wasm>
         """,
         encoding="utf-8",
     )
@@ -52,3 +54,20 @@ def test_sandbox_export_uses_only_external_scripts_and_defers_entrypoint(
     assert 'import("./assets/main.js")' in (sandbox / "boot.js").read_text(
         encoding="utf-8"
     )
+    assert 'data-host="chrome-extension"' in (
+        sandbox / "index.html"
+    ).read_text(encoding="utf-8")
+
+
+def test_add_chrome_extension_host_marks_the_wasm_element() -> None:
+    html = '<body><marimo-wasm hidden="" data-x="1"></marimo-wasm></body>'
+
+    assert add_chrome_extension_host(html) == (
+        '<body><marimo-wasm data-host="chrome-extension" hidden="" data-x="1">'
+        "</marimo-wasm></body>"
+    )
+
+
+def test_add_chrome_extension_host_rejects_missing_wasm_element() -> None:
+    with pytest.raises(ValueError, match="marimo-wasm"):
+        add_chrome_extension_host("<body></body>")

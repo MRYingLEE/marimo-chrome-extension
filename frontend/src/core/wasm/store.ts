@@ -78,6 +78,24 @@ export const mountConfigFileStore: FileStore = {
   },
 };
 
+/**
+ * Write-only store that forwards saves to the embedding page. It never
+ * supplies code, so adding it cannot change read precedence.
+ */
+export function createParentSaveFileStore(
+  parent: Pick<Window, "postMessage">,
+): FileStore {
+  return {
+    saveFile(contents: string) {
+      // The sandbox has an opaque origin, so the parent cannot be targeted by URL.
+      parent.postMessage({ type: "save", code: contents }, "*");
+    },
+    readFile() {
+      return null;
+    },
+  };
+}
+
 const emptyFileStore: FileStore = {
   saveFile(_contents: string) {
     // Do nothing

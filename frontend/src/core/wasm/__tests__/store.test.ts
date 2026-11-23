@@ -4,6 +4,7 @@ import { codeAtom } from "../../saving/file-state";
 import { store } from "../../state/jotai";
 import {
   CompositeFileStore,
+  createParentSaveFileStore,
   domElementFileStore,
   localStorageFileStore,
   mountConfigFileStore,
@@ -84,5 +85,31 @@ describe("notebookFileStore priority", () => {
     document.body.replaceChildren(element);
 
     expect(notebookFileStore.readFile()).toBe("mount config code");
+  });
+});
+
+describe("createParentSaveFileStore", () => {
+  it("posts the saved code to the parent", () => {
+    const parent = { postMessage: vi.fn() };
+    createParentSaveFileStore(parent).saveFile("print('hi')");
+    expect(parent.postMessage).toHaveBeenCalledTimes(1);
+    expect(parent.postMessage).toHaveBeenCalledWith(
+      { type: "save", code: "print('hi')" },
+      "*",
+    );
+  });
+
+  it("never supplies code on read", () => {
+    const parent = { postMessage: vi.fn() };
+    expect(createParentSaveFileStore(parent).readFile()).toBeNull();
+  });
+
+  it("does not change read precedence when placed first", () => {
+    const parent = { postMessage: vi.fn() };
+    const composite = new CompositeFileStore([
+      createParentSaveFileStore(parent),
+      { readFile: () => "stored", saveFile: vi.fn() },
+    ]);
+    expect(composite.readFile()).toBe("stored");
   });
 });

@@ -9,6 +9,10 @@ export interface WasmRuntimeConfig {
   pypiIndexUrl?: string;
 }
 
+export function getWasmHost(): string | undefined {
+  return document.querySelector<HTMLElement>("marimo-wasm")?.dataset.host;
+}
+
 export function getWasmRuntimeConfig(): WasmRuntimeConfig {
   const element = document.querySelector<HTMLElement>("marimo-wasm");
   const resolve = (url: string | undefined) => {

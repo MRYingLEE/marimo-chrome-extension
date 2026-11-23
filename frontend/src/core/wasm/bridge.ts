@@ -45,10 +45,14 @@ import { filenameAtom } from "../saving/file-state";
 import { store } from "../state/jotai";
 import { PyodideRouter } from "./router";
 import { getWorkerRPC, type PersistNotebookRequest } from "./rpc";
-import { getWasmRuntimeConfig } from "./runtime-config";
+import { getWasmHost, getWasmRuntimeConfig } from "./runtime-config";
 import { createShareableLink } from "./share";
 import { wasmInitStateAtom } from "./state";
-import { fallbackFileStore, notebookFileStore } from "./store";
+import {
+  createParentSaveFileStore,
+  fallbackFileStore,
+  notebookFileStore,
+} from "./store";
 import { isWasm } from "./utils";
 import saveWorkerUrl from "./worker/save-worker.ts?worker&url";
 import workerUrl from "./worker/worker.ts?worker&url";
@@ -110,6 +114,10 @@ export class PyodideBridge implements RunRequests, EditRequests {
   private constructor() {
     if (!isWasm()) {
       return;
+    }
+
+    if (getWasmHost() === "chrome-extension") {
+      notebookFileStore.insert(0, createParentSaveFileStore(window.parent));
     }
 
     const runtimeConfig = getWasmRuntimeConfig();
@@ -190,6 +198,15 @@ export class PyodideBridge implements RunRequests, EditRequests {
     const code = await notebookFileStore.readFile();
     const fallbackCode = await fallbackFileStore.readFile();
     const filename = store.get(filenameAtom) ?? PyodideRouter.getFilename();
+    // WASM exports turn autosave off because they are static. The chrome
+    // extension saves through the parent, so it needs autosave to persist edits.
+    if (getWasmHost() === "chrome-extension") {
+      const current = store.get(userConfigAtom);
+      store.set(userConfigAtom, {
+        ...current,
+        save: { ...current.save, autosave: "after_delay" },
+      });
+    }
     const userConfig = store.get(userConfigAtom);
 
     const queryParameters: Record<string, string | string[]> = {};

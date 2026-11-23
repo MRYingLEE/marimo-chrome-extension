@@ -49,8 +49,11 @@ class Report:
             await fn()
             self.results[name] = {"pass": True}
         except Exception as error:  # noqa: BLE001
-            first_line = str(error).strip().splitlines()[0][:200]
-            self.results[name] = {"pass": False, "error": first_line}
+            message = str(error).strip() or type(error).__name__
+            self.results[name] = {
+                "pass": False,
+                "error": message.splitlines()[0][:200],
+            }
 
     def csp_errors(self) -> list[str]:
         needles = ("Content Security Policy", "Refused to", "unsafe-eval")
@@ -119,6 +122,92 @@ async def persistence(
 
     await report.check(
         "IndexedDB filesystem persists across reload", after_reload
+    )
+
+
+SEED_MARKER = "run count persisted on disk"
+OPENED_NAME = "phase3-local.py"
+OPENED_SOURCE = """import marimo
+
+__generated_with = "0.25.2"
+app = marimo.App()
+
+
+@app.cell
+def _():
+    import marimo as mo
+
+    return (mo,)
+
+
+@app.cell
+def _(mo):
+    mo.md("local marker: phase3-opened")
+    return
+
+
+if __name__ == "__main__":
+    app.run()
+"""
+
+
+async def download_source(page: Page, filename: str, marker: str) -> None:
+    async with page.expect_download() as info:
+        await page.click("#download")
+    download = await info.value
+    assert download.suggested_filename == filename, download.suggested_filename
+    path = await download.path()
+    content = await asyncio.to_thread(Path(path).read_text, encoding="utf-8")
+    assert marker in content, content[:300]
+
+
+async def stored_code(page: Page) -> str:
+    stored = await page.evaluate("() => chrome.storage.local.get('notebook')")
+    return stored.get("notebook", {}).get("code", "")
+
+
+async def notebook_io(
+    page: Page, root: Page | FrameLocator, report: Report
+) -> None:
+    async def seed_fallback() -> None:
+        await download_source(page, "notebook.py", SEED_MARKER)
+
+    async def opens_local_file() -> None:
+        with tempfile.TemporaryDirectory(prefix="spike-open-") as folder:
+            path = Path(folder) / OPENED_NAME
+            path.write_text(OPENED_SOURCE, encoding="utf-8")
+            await page.locator("#file").set_input_files(str(path))
+        await root.locator(
+            ".cm-content", has_text="phase3-opened"
+        ).first.wait_for(timeout=BOOT_TIMEOUT_MS)
+
+    async def edit_persists() -> None:
+        await root.locator(".cm-line", has_text="local marker").first.click()
+        await page.keyboard.press("End")
+        await page.keyboard.type("-edited")
+        await page.keyboard.press("Shift+Enter")
+        for _ in range(STEP_TIMEOUT_MS // 250):
+            if "phase3-opened-edited" in await stored_code(page):
+                return
+            await asyncio.sleep(0.25)
+        raise AssertionError("edited source was not saved to chrome.storage")
+
+    async def restores_after_reload() -> None:
+        await page.reload()
+        await root.locator(
+            ".cm-content", has_text="phase3-opened-edited"
+        ).first.wait_for(timeout=BOOT_TIMEOUT_MS)
+
+    async def downloads_current_source() -> None:
+        await download_source(page, OPENED_NAME, "phase3-opened-edited")
+
+    await report.check("first run falls back to bundled seed", seed_fallback)
+    await report.check("opens a local .py file", opens_local_file)
+    await report.check("edit is saved to chrome.storage.local", edit_persists)
+    await report.check("edit is restored after reload", restores_after_reload)
+    await report.check(
+        "download saves current source with its filename",
+        downloads_current_source,
     )
 
 
@@ -211,16 +300,20 @@ async def run(
             raise AssertionError(f"iframe was not resized: {height!r}")
 
         await report.check(BOOT_CHECK, cell_runs)
-        if not shell_only and report.results[BOOT_CHECK]["pass"]:
-            await report.check("mo.ui slider", slider)
-            await report.check("Altair chart renders", altair)
-            await report.check("anywidget renders and syncs", anywidget)
-            await report.check("mo.Html <script src> runs", html_script)
-            await report.check("mo.iframe inline script runs", iframe_script)
-            await report.check(
-                "inline onload handler runs (iframe resize)", iframe_resize
-            )
-            await persistence(page, root, report, url)
+        if report.results[BOOT_CHECK]["pass"]:
+            if not shell_only:
+                await report.check("mo.ui slider", slider)
+                await report.check("Altair chart renders", altair)
+                await report.check("anywidget renders and syncs", anywidget)
+                await report.check("mo.Html <script src> runs", html_script)
+                await report.check(
+                    "mo.iframe inline script runs", iframe_script
+                )
+                await report.check(
+                    "inline onload handler runs (iframe resize)", iframe_resize
+                )
+                await persistence(page, root, report, url)
+            await notebook_io(page, root, report)
         if screenshot:
             await page.screenshot(path=str(screenshot))
         report.results["_csp_errors"] = {"errors": report.csp_errors()}
@@ -253,5 +346,9 @@ if __name__ == "__main__":
         )
     )
     sys.stdout.write(json.dumps(results, indent=2) + "\n")
-    if args.shell_only and not results[BOOT_CHECK]["pass"]:
+    if args.shell_only and not all(
+        result.get("pass", True)
+        for name, result in results.items()
+        if not name.startswith("_")
+    ):
         sys.exit(1)
