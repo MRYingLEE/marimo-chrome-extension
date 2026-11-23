@@ -3,7 +3,11 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
-from build_extension import add_chrome_extension_host, build
+from build_extension import (
+    add_chrome_extension_host,
+    build,
+    remove_unused_image_preloads,
+)
 
 
 class Scripts(HTMLParser):
@@ -57,6 +61,17 @@ def test_sandbox_export_uses_only_external_scripts_and_defers_entrypoint(
     assert 'data-host="chrome-extension"' in (
         sandbox / "index.html"
     ).read_text(encoding="utf-8")
+
+
+def test_remove_unused_image_preloads_keeps_other_preloads() -> None:
+    font = '<link rel="preload" href="./assets/font-ghi.woff2" as="font" />'
+    html = (
+        '<link rel="preload" href="./assets/gradient-abc.png" as="image" />\n'
+        '<link rel="preload" href="./assets/noise-def.png" as="image" />\n'
+        f"{font}"
+    )
+
+    assert remove_unused_image_preloads(html).strip() == font
 
 
 def test_add_chrome_extension_host_marks_the_wasm_element() -> None:

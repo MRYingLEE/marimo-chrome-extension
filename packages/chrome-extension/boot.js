@@ -20,6 +20,11 @@ async function onMessage(event) {
     return;
   }
   started = true;
+  // Set before the entrypoint loads, because marimo reads its storage at import.
+  window.marimoParentStorage = {
+    snapshot: message.storage ?? {},
+    write: (key, value) => parent.postMessage({ type: "storage", key, value }, "*"),
+  };
   document.querySelector("marimo-code").textContent = encodeURIComponent(
     message.code,
   );

@@ -1,5 +1,6 @@
 const seed = "__SEED__";
 const KEY = "notebook";
+const UI_PREFIX = "ui:";
 const frame = document.querySelector("iframe");
 const openButton = document.querySelector("#open");
 const fileInput = document.querySelector("#file");
@@ -7,6 +8,9 @@ const downloadButton = document.querySelector("#download");
 const status = document.querySelector("#status");
 
 let notebook = { code: seed, filename: "notebook.py" };
+// The sandbox's UI storage (localStorage is blocked there), mirrored to
+// chrome.storage.local under `UI_PREFIX` keys.
+let uiStorage = new Map();
 // Set from `open` until the reloaded sandbox reports `ready`. Saves in that
 // window come from the notebook being replaced, so they must not be stored.
 let reloading = false;
@@ -19,12 +23,29 @@ function persist() {
   return chrome.storage.local.set({ [KEY]: notebook });
 }
 
+function writeUiStorage(key, value) {
+  if (value === null) {
+    uiStorage.delete(key);
+    return chrome.storage.local.remove(UI_PREFIX + key);
+  }
+  if (typeof value !== "string") {
+    return;
+  }
+  uiStorage.set(key, value);
+  return chrome.storage.local.set({ [UI_PREFIX + key]: value });
+}
+
 async function restore() {
   try {
-    const { [KEY]: stored } = await chrome.storage.local.get(KEY);
-    if (isNotebook(stored)) {
-      notebook = { code: stored.code, filename: stored.filename };
+    const stored = await chrome.storage.local.get(null);
+    if (isNotebook(stored[KEY])) {
+      notebook = { code: stored[KEY].code, filename: stored[KEY].filename };
     }
+    uiStorage = new Map(
+      Object.entries(stored)
+        .filter(([key, value]) => key.startsWith(UI_PREFIX) && typeof value === "string")
+        .map(([key, value]) => [key.slice(UI_PREFIX.length), value]),
+    );
   } catch (error) {
     console.error("Could not read the stored notebook; using the seed", error);
   }
@@ -41,7 +62,12 @@ window.addEventListener("message", (event) => {
     openButton.disabled = false;
     // The sandbox has an opaque origin, so it cannot be targeted by URL.
     frame.contentWindow.postMessage(
-      { type: "init", code: notebook.code, filename: notebook.filename },
+      {
+        type: "init",
+        code: notebook.code,
+        filename: notebook.filename,
+        storage: Object.fromEntries(uiStorage),
+      },
       "*",
     );
   } else if (message?.type === "reload") {
@@ -54,6 +80,8 @@ window.addEventListener("message", (event) => {
     }
     notebook = { code: message.code, filename: notebook.filename };
     persist();
+  } else if (message?.type === "storage" && typeof message.key === "string") {
+    writeUiStorage(message.key, message.value);
   }
 });
 

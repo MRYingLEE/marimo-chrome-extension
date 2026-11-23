@@ -28,6 +28,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LazyActivity } from "@/components/utils/lazy-mount";
 import { cellErrorCount } from "@/core/cells/cells";
 import { capabilitiesAtom } from "@/core/config/capabilities";
+import { availableStorage } from "@/utils/storage/storage";
 import { aiEnabledAtom } from "@/core/config/config";
 import { getFeatureFlag } from "@/core/config/feature-flag";
 import { cn } from "@/utils/cn";
@@ -602,7 +603,11 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
 
   return (
     <PanelsWrapper>
-      <PanelGroup autoSaveId="marimo:chrome:v1:l2" direction={"horizontal"}>
+      <PanelGroup
+        autoSaveId="marimo:chrome:v1:l2"
+        direction={"horizontal"}
+        storage={availableStorage}
+      >
         <TooltipProvider>
           <Sidebar />
         </TooltipProvider>
@@ -612,7 +617,11 @@ export const AppChrome: React.FC<PropsWithChildren> = ({ children }) => {
           data-testid="chrome-body"
           className={cn(isDeveloperPanelOpen && !isSidebarOpen && "border-l")}
         >
-          <PanelGroup autoSaveId="marimo:chrome:v1:l1" direction="vertical">
+          <PanelGroup
+            autoSaveId="marimo:chrome:v1:l1"
+            direction="vertical"
+            storage={availableStorage}
+          >
             {appBodyPanel}
             {bottomPanel}
           </PanelGroup>

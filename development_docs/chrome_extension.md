@@ -361,8 +361,10 @@ Errors seen in B:
   marimo's cross-origin worker fallback uses a `data:` URL, so the sandbox CSP
   needs `worker-src 'self' blob: data:` and `script-src ... blob: data:`.
 - `SecurityError: Failed to read the 'localStorage' property ... sandboxed and
-  lacks the 'allow-same-origin' flag`. marimo falls back to in-memory storage
-  and the panel works.
+  lacks the 'allow-same-origin' flag`. Fixed: the editor's `PanelGroup`s in
+  `app-chrome.tsx` take `availableStorage`, so `react-resizable-panels` never
+  reads `localStorage` in the sandbox. `availableStorage` tries localStorage,
+  then sessionStorage, then the parent bridge (see Phase 4), then in-memory.
 - `Blocked a frame with origin "null" from accessing a cross-origin frame`.
   `__resizeIframe` reads `contentWindow.document`, so `mo.iframe` does not
   auto-size.
@@ -424,9 +426,24 @@ fails at the cell run, as in the spike table.
 | Phase 3 notebook I/O (seed fallback, open, save, restore, download) | pass |
 | Filesystem cell writes file | fail (timeout). This check failed before phase 3 too. |
 
-No CSP errors are reported. Console output has the known `localStorage`
-`SecurityError` and an `[anywidget] binding destroyed` error during teardown.
-The teardown error was not investigated.
+No CSP errors are reported. After the panel storage fix and the build fixes
+(the export no longer bundles the uv cache as a local wheel, and the unused
+`gradient`/`noise` preloads are removed), a fresh profile's console has no
+error messages. The `[iframe]` info logs are expected in the embedded context.
+
+The panel saves the notebook to `chrome.storage.local`, and restore prefers
+that copy over the embedded seed.
+
+UI state (sidebar, panel layout) persists through a storage bridge. The sandbox
+has no `localStorage` or `indexedDB`, so `boot.js` sets
+`window.marimoParentStorage` before importing marimo. It holds a snapshot of
+the `ui:` keys from `init.storage`, and its writes go to the panel as
+`{ type: "storage", key, value }`. `panel.js` mirrors each write to
+`chrome.storage.local` under `ui:<key>`. A `null` value removes the key. The
+bridge is read at marimo's import time, so the snapshot must be sent in `init`. A profile saved by an older build can keep
+a stale PEP 723 dependency (such as `uv-cache==…`), which makes every load fail
+with `Failed to load packages from micropip`. Rebuilding does not replace the
+stored notebook. Remove the extension or clear its storage to reset it.
 
 Vitest covers the listener (`iframe-height.test.ts`), and the Python formatter
 and template tests pass. Two gaps remain. The check runs only in headless
@@ -442,9 +459,11 @@ CSP cannot allow `data:`, `blob:` or `unsafe-eval`, so no frontend change can
 fix them. The decision rule needs fixes that are small and general, and these
 are not. A Vega interpreter fix would only cover one of the four failures.
 
-B costs us IndexedDB. The sandbox has an opaque origin, so Pyodide uses its
-in-memory filesystem and files written by cells are lost when the panel
-closes. Phase 3 therefore added a persistence bridge: the parent extension
+B costs us IndexedDB. The sandbox has an opaque origin, so `localStorage`,
+`sessionStorage`, and `indexedDB` all throw `SecurityError` there, including in
+the Pyodide worker. Pyodide therefore uses its in-memory filesystem, and files
+written by cells are lost when the panel closes. UI state is bridged to
+`chrome.storage.local` (see Phase 4). Phase 3 therefore added a persistence bridge: the parent extension
 page owns storage and the sandbox talks to it through `postMessage`. The
 notebook source goes through the parent (`chrome.storage.local`). Persisting
 arbitrary files under `/marimo` is new work and is still not supported.

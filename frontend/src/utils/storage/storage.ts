@@ -3,16 +3,45 @@
 import { getIframeCapabilities } from "../capabilities";
 
 /**
- * In-memory storage implementation of the Storage interface.
+ * Storage for embedders that persist values outside the page, such as the
+ * Chrome extension panel. `snapshot` seeds the store synchronously, and `write`
+ * receives every change (`null` means removed).
  */
-class InMemoryStorage implements Storage {
-  private store = new Map<string, string>();
+export interface ParentStorageBridge {
+  snapshot: Record<string, string>;
+  write: (key: string, value: string | null) => void;
+}
+
+declare global {
+  interface Window {
+    marimoParentStorage?: ParentStorageBridge;
+  }
+}
+
+/**
+ * In-memory storage implementation of the Storage interface, optionally
+ * mirroring writes to an external sink.
+ */
+export class InMemoryStorage implements Storage {
+  private store: Map<string, string>;
+  private onWrite?: (key: string, value: string | null) => void;
+
+  constructor(
+    initial: Record<string, string> = {},
+    onWrite?: (key: string, value: string | null) => void,
+  ) {
+    this.store = new Map(Object.entries(initial));
+    this.onWrite = onWrite;
+  }
 
   public get length(): number {
     return this.store.size;
   }
 
   public clear(): void {
+    for (const key of this.store.keys()) {
+      this.onWrite?.(key, null);
+    }
     this.store.clear();
   }
 
@@ -27,10 +56,12 @@ class InMemoryStorage implements Storage {
 
   public removeItem(key: string): void {
     this.store.delete(key);
+    this.onWrite?.(key, null);
   }
 
   public setItem(key: string, value: string): void {
     this.store.set(key, value);
+    this.onWrite?.(key, value);
   }
 }
 
@@ -48,10 +79,16 @@ function getAvailableStorage(): Storage {
     return window.sessionStorage;
   }
 
+  const bridge = window.marimoParentStorage;
+  if (bridge) {
+    return new InMemoryStorage(bridge.snapshot, bridge.write);
+  }
+
   return new InMemoryStorage();
 }
 
 /**
- * The best available storage. Either localStorage, sessionStorage, or in-memory storage.
+ * The best available storage. Either localStorage, sessionStorage, the parent's
+ * storage bridge, or in-memory storage.
  */
 export const availableStorage: Storage = getAvailableStorage();

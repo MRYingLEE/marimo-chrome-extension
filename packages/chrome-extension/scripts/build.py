@@ -16,7 +16,10 @@ from local_index import local_index
 
 
 def main() -> None:
-    with TemporaryDirectory(prefix="marimo-chrome-extension-") as directory:
+    with (
+        TemporaryDirectory(prefix="marimo-chrome-extension-") as directory,
+        TemporaryDirectory(prefix="marimo-chrome-extension-uv-") as uv_cache,
+    ):
         tmp = Path(directory)
         home = tmp / "home"
         home.mkdir()
@@ -31,7 +34,7 @@ def main() -> None:
                 (str(Path(sys.executable).parent), env["PATH"])
             ),
             PYTHONDONTWRITEBYTECODE="1",
-            UV_CACHE_DIR=str(tmp / "uv-cache"),
+            UV_CACHE_DIR=uv_cache,
             UV_PYTHON=sys.executable,
             XDG_CACHE_HOME=str(home / ".cache"),
             XDG_CONFIG_HOME=str(home / ".config"),

@@ -77,6 +77,9 @@ def _(mo):
         function render({ model, el }) {
           const button = document.createElement("button");
           button.id = "spike-anywidget";
+          button.style.cssText =
+            "padding: 6px 14px; font-size: 14px; border-radius: 6px; " +
+            "border: 1px solid #888; background: #f4f4f5; color: #111; cursor: pointer;";
           const update = () => {
             button.textContent = `count is ${model.get("value")}`;
           };

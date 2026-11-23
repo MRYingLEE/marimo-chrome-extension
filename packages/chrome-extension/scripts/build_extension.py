@@ -29,6 +29,9 @@ MARIMO_CODE = re.compile(
     r"(<marimo-code\b[^>]*>)(.*?)(</marimo-code>)", re.DOTALL
 )
 MARIMO_WASM = re.compile(r"<marimo-wasm\b")
+UNUSED_IMAGE_PRELOAD = re.compile(
+    r"""\s*<link rel="preload" href="\./assets/(?:gradient|noise)-[^"]+\.png" as="image" />"""
+)
 FILE_WARNING = "window.location.protocol === 'file:'"
 ICONS = {
     "16": "favicon-16x16.png",
@@ -97,6 +100,11 @@ def add_handshake(html: str, page_dir: Path, out_dir: Path) -> str:
     return MARIMO_CODE.sub(r"\1\3", html, count=1)
 
 
+def remove_unused_image_preloads(html: str) -> str:
+    # The side panel never shows the background textures, so the preloads only warn.
+    return UNUSED_IMAGE_PRELOAD.sub("", html)
+
+
 def add_chrome_extension_host(html: str) -> str:
     # Enables the frontend's write-only save store, which only exists in this build.
     if len(MARIMO_WASM.findall(html)) != 1:
@@ -113,7 +121,7 @@ def manifest(option: str) -> dict[str, object]:
     base: dict[str, object] = {
         "manifest_version": 3,
         "name": "marimo",
-        "version": "0.0.1",
+        "version": "0.0.3",
         "permissions": ["sidePanel", "storage", "unlimitedStorage"],
         "background": {"service_worker": "background.js", "type": "module"},
         "side_panel": {"default_path": "sidepanel.html"},
@@ -139,10 +147,12 @@ def build(export_dir: Path, out_dir: Path, option: str = "b") -> None:
     page_dir = out_dir / "sandbox" if option == "b" else out_dir
     shutil.copytree(export_dir, page_dir)
     index = page_dir / "index.html"
-    html = externalize_inline_scripts(
-        index.read_text(encoding="utf-8"),
-        page_dir,
-        auto_instantiate=AUTO_INSTANTIATE if option == "b" else None,
+    html = remove_unused_image_preloads(
+        externalize_inline_scripts(
+            index.read_text(encoding="utf-8"),
+            page_dir,
+            auto_instantiate=AUTO_INSTANTIATE if option == "b" else None,
+        )
     )
     if option == "a":
         index.unlink()
