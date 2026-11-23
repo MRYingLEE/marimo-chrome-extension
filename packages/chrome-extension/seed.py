@@ -111,9 +111,9 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    # 6. mo.iframe is the documented way to run inline scripts. It also
-    # relies on an inline `onload` handler (`__resizeIframe`) to fit the
-    # iframe to its content, which a strict CSP blocks.
+    # 6. mo.iframe is the documented way to run inline scripts. The iframe
+    # reports its content height via postMessage, so the page fits it to the
+    # content; the 100px starting height is what the check expects to grow.
     mo.iframe(
         '<div id="spike-iframe" style="height:900px">script has not run</div>'
         "<script>document.getElementById('spike-iframe').textContent ="

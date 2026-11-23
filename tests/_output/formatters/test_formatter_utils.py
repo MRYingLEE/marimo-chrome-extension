@@ -11,7 +11,9 @@ from tests.conftest import ExecReqProvider
 def test_srcdoc_in_notebook() -> None:
     html_content = "<html><body>Hello, World!</body></html>"
     result = src_or_src_doc(html_content)
-    assert result == {"srcdoc": html_content}
+    assert list(result) == ["srcdoc"]
+    assert result["srcdoc"].startswith(html_content)
+    assert 'type: "marimo:iframe-height"' in result["srcdoc"]
 
 
 @patch(
@@ -26,4 +28,6 @@ def test_src_in_notebook(
     html_content = "<html><body>Hello, World!</body></html>"
     result = src_or_src_doc(html_content)
     assert result == {"src": "file_url"}
-    mock_html.assert_called_once_with(html_content)
+    (served_html,) = mock_html.call_args.args
+    assert served_html.startswith(html_content)
+    assert 'type: "marimo:iframe-height"' in served_html

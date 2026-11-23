@@ -18,10 +18,15 @@ def test_maybe_wrap_in_iframe_with_script_src():
 
 def test_maybe_wrap_in_iframe_with_inline_script():
     html = '<script>console.log("hello")</script>'
-    assert (
-        maybe_wrap_in_iframe(html)
-        == "<iframe srcdoc='&lt;script&gt;console.log(&quot;hello&quot;)&lt;/script&gt;' width='100%' height='400px' onload='__resizeIframe(this)' frameborder='0'></iframe>"
+    result = maybe_wrap_in_iframe(html)
+    assert result.startswith(
+        "<iframe srcdoc='&lt;script&gt;console.log(&quot;hello&quot;)&lt;/script&gt;"
     )
+    assert "marimo:iframe-height" in result
+    assert result.endswith(
+        "&lt;/script&gt;' width='100%' height='400px' frameborder='0'></iframe>"
+    )
+    assert "onload" not in result
 
 
 def test_maybe_wrap_in_iframe_preserves_inline_script_newlines():
@@ -29,12 +34,15 @@ def test_maybe_wrap_in_iframe_preserves_inline_script_newlines():
 // This comment must not consume the next line.
 console.log("hello")
 </script>"""
-    assert (
-        maybe_wrap_in_iframe(html)
-        == """<iframe srcdoc='&lt;script&gt;
+    result = maybe_wrap_in_iframe(html)
+    assert result.startswith(
+        """<iframe srcdoc='&lt;script&gt;
 // This comment must not consume the next line.
 console.log(&quot;hello&quot;)
-&lt;/script&gt;' width='100%' height='400px' onload='__resizeIframe(this)' frameborder='0'></iframe>"""
+&lt;/script&gt;"""
+    )
+    assert result.endswith(
+        "&lt;/script&gt;' width='100%' height='400px' frameborder='0'></iframe>"
     )
 
 

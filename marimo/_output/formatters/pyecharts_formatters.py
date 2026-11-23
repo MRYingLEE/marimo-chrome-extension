@@ -28,7 +28,6 @@ class PyechartsFormatter(FormatterFactory):
                 flatten_string(
                     h.iframe(
                         **src_or_src_doc(html_content),
-                        onload="__resizeIframe(this)",
                         style="width: 100%",
                     )
                 ),

@@ -35,7 +35,6 @@ class LeafmapFormatter(FormatterFactory):
                 flatten_string(
                     h.iframe(
                         **src_or_src_doc(html_content),
-                        onload="__resizeIframe(this)",
                         style="min-height: 540px",
                         width="100%",
                     )
@@ -80,7 +79,6 @@ class LeafmapFormatter(FormatterFactory):
                     flatten_string(
                         h.iframe(
                             **src_or_src_doc(contents),
-                            onload="__resizeIframe(this)",
                             style="min-height: 540px",
                             width="100%",
                         )

@@ -143,7 +143,6 @@ class IPythonFormatter(FormatterFactory):
                 # TODO(akshayka): resize iframe not working
                 data = h.iframe(
                     src=html.url,
-                    onload="__resizeIframe(this)",
                     width="100%",
                 )
             else:

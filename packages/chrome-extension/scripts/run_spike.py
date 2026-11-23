@@ -290,17 +290,22 @@ async def run(
             )
 
         async def iframe_resize() -> None:
-            # `__resizeIframe` grows the iframe from 100px to fit its content.
-            iframe = root.locator("iframe[srcdoc]").first
+            # The sandboxed iframe posts its content height to the page, which
+            # grows the 100px iframe to fit its 900px content.
+            iframe = root.locator("iframe[srcdoc*='spike-iframe']").first
+            height = 0.0
             for _ in range(STEP_TIMEOUT_MS // 250):
-                height = await iframe.evaluate("e => e.style.height")
-                if height not in ("", "100px"):
+                height = await iframe.evaluate(
+                    "e => parseFloat(e.style.height) || 0"
+                )
+                if height >= 900:
                     return
                 await asyncio.sleep(0.25)
-            raise AssertionError(f"iframe was not resized: {height!r}")
+            raise AssertionError(f"iframe was not resized: {height}px")
 
         await report.check(BOOT_CHECK, cell_runs)
         if report.results[BOOT_CHECK]["pass"]:
+            await report.check("mo.iframe resizes to content", iframe_resize)
             if not shell_only:
                 await report.check("mo.ui slider", slider)
                 await report.check("Altair chart renders", altair)
@@ -308,9 +313,6 @@ async def run(
                 await report.check("mo.Html <script src> runs", html_script)
                 await report.check(
                     "mo.iframe inline script runs", iframe_script
-                )
-                await report.check(
-                    "inline onload handler runs (iframe resize)", iframe_resize
                 )
                 await persistence(page, root, report, url)
             await notebook_io(page, root, report)

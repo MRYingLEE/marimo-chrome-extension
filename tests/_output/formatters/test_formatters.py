@@ -259,9 +259,11 @@ def test_repr_html_with_script_tag_without_src():
     assert formatter is not None
     mime, content = formatter(obj)
     assert mime == "text/html"
-    assert (
-        content
-        == "<iframe srcdoc='&lt;script&gt;alert(&#x27;Hello, World!&#x27;)&lt;/script&gt;' width='100%' height='400px' onload='__resizeIframe(this)' frameborder='0'></iframe>"
+    assert content.startswith(
+        "<iframe srcdoc='&lt;script&gt;alert(&#x27;Hello, World!&#x27;)&lt;/script&gt;"
+    )
+    assert content.endswith(
+        "&lt;/script&gt;' width='100%' height='400px' frameborder='0'></iframe>"
     )
 
 

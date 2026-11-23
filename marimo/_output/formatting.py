@@ -412,7 +412,6 @@ def iframe(html: str, *, width: str = "100%", height: str = "400px") -> Html:
     return Html(
         h.iframe(
             **src_or_src_doc(html),
-            onload="__resizeIframe(this)",
             width=width,
             height=height,
         ),

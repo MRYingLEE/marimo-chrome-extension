@@ -1,8 +1,9 @@
 # Design: marimo in a Chrome side panel
 
-Status: phases 1, 2, and 3 are implemented. The [spike](#spike) chose option B.
+Status: phases 1 through 4 are implemented. The [spike](#spike) chose option B.
 The extension restores the notebook from `chrome.storage.local`, opens local
-`.py` files, and saves by download. Phase 4 (iframe resizing) is still planned.
+`.py` files, saves by download, and auto-sizes `mo.iframe` outputs. Phase 5
+(tests and docs) is still planned.
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
 in the browser, with no marimo server and no network access at runtime.
@@ -49,8 +50,8 @@ WebAssembly is allowed. These are blocked, and each one affects marimo today:
 
 | Blocked | Where marimo hits it |
 | --- | --- |
-| Inline `<script>` | `frontend/index.html` (`__resizeIframe`, `__MARIMO_MOUNT_CONFIG__`) and `wasm_notebook_template` (export context, `file:` warning) |
-| Inline event handlers | `onload="__resizeIframe(this)"` in output formatters (`marimo/_output/formatting.py`, bokeh, leafmap, pyecharts, ipython) |
+| Inline `<script>` | `frontend/index.html` (`__MARIMO_MOUNT_CONFIG__`) and `wasm_notebook_template` (export context, `file:` warning). The `__resizeIframe` script was removed in phase 4. |
+| Inline event handlers | The `onload="__resizeIframe(this)"` attribute in output formatters was removed in phase 4. The iframe height reporter is an inline `<script>` in the iframe content, see [Iframe resizing](#iframe-resizing). |
 | `eval` / `new Function` | Vega expression compiling (Altair charts). Vega does not use `vega-interpreter` in marimo today. Possibly other renderers. |
 | `blob:` / remote module imports | anywidget ESM in `frontend/src/plugins/impl/anywidget/widget-binding.ts` |
 | Scripts inside `srcdoc` iframes | `srcdoc` iframes inherit the parent CSP, so HTML outputs that carry scripts break |
@@ -113,6 +114,28 @@ and `event.origin` is `"null"`. The sandbox accepts a message only when
 | sandbox → parent | `save { code }` | The notebook changed, so the parent stores it |
 | parent → sandbox | `open { code, filename }` | The user picked a `.py` file. The sandbox asks for a reload |
 | sandbox → parent | `reload` | The sandbox cannot reload itself, so the parent sets `frame.src` again |
+
+### Iframe resizing
+
+Output iframes (for example `mo.iframe`) cannot be measured from the parent,
+because the sandbox's opaque origin blocks `contentWindow.document`. Instead,
+each iframe's content posts its height to its parent window:
+
+- The reporter is an inline `<script>` appended to the iframe's HTML by
+  [`src_or_src_doc`](../marimo/_output/formatters/utils.py). It posts
+  `{ type: "marimo:iframe-height", height }` with target origin `"*"`, because
+  a sandboxed child has an opaque origin. It reports on `ResizeObserver` and
+  on `load`. The `load` report covers frames the browser has not rendered yet.
+- The receiver is `registerIframeHeightListener` in
+  [`iframe-height.ts`](../frontend/src/utils/iframe-height.ts). It runs in the
+  sandbox page, because that is the window whose child iframes post to it. It
+  accepts a message only when `event.source` is the `contentWindow` of an
+  iframe in the document, and when the payload passes a zod schema (a number
+  from 0 to 100000). It then sets that iframe's height. `panel.js` is not a
+  receiver, because it only sees messages from its own sandbox frame.
+- The reporter grows the iframe but never shrinks it. Once the iframe is as
+  tall as its content, nothing is reported, so a later decrease in content
+  height leaves the iframe at its larger size.
 
 ### Build pipeline (`packages/chrome-extension`)
 
@@ -229,8 +252,15 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
   panel closes. The notebook source itself persists in `chrome.storage.local`.
 - Opening a file replaces the stored notebook. There is no undo, and there is
   no multi-notebook support.
-- `mo.iframe` and other `__resizeIframe` outputs do not auto-size, because the
-  sandbox's opaque origin blocks reading `contentWindow.document`.
+- `mo.iframe` and other iframe outputs auto-size through a `postMessage` from
+  the iframe's content (see [Iframe resizing](#iframe-resizing)). Limits:
+  they grow but do not shrink, and the reporter is an inline script, so under
+  a strict-CSP host (one without `'unsafe-inline'`) it is blocked and the
+  iframe keeps its initial height. The `ipython` formatter's `html.url` case
+  passes a URL, not HTML, so no reporter is injected and it does not resize.
+  The old handler resized it only for same-origin documents, and the TODO in
+  that formatter already noted it did not work. Hosts that defined their own
+  `window.__resizeIframe` no longer get it called.
 - Notebook output can run arbitrary script with `unsafe-eval` inside the
   sandbox. It cannot reach `chrome.*` or the extension's storage, which is the
   point of B, but it has network access to whatever the notebook asks for.
@@ -255,9 +285,11 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
    the `init`, `save`, `open`, and `reload` messages, the write-only file store
    in the frontend, the `.py` picker, and saving by download. See
    [Notebook source and saving](#notebook-source-and-saving).
-4. **Sandbox polish.** Replace the `__resizeIframe` `contentWindow` read with a
-   `postMessage` so iframes auto-size. Only general fixes that also help
-   strict-CSP web hosting go in `frontend/src`.
+4. **Sandbox polish (done).** Iframe outputs report their height with
+   `postMessage` instead of `__resizeIframe` reading `contentWindow.document`.
+   The inline `onload` handlers and the `index.html` resizer were removed.
+   See [Iframe resizing](#iframe-resizing) and
+   [Phase 4 checks](#phase-4-checks-option-b-unpacked-chromium).
 5. **Tests and docs.**
    - Unit tests (Vitest) for the file store.
    - A short section in `development_docs/pyodide.md`.
@@ -373,9 +405,35 @@ Console output in B: the `localStorage` `SecurityError` from
 `react-resizable-panels`, and `Blocked a frame with origin "null"`. Both are
 known and do not affect the phase 3 checks.
 
-### Decision
+### Phase 4 checks (option B, unpacked Chromium)
 
-**Option B**, the sandboxed page. A fails on anywidget and `mo.iframe` because
+`run_spike.py dist --option b` (full) and `run_spike.py dist --shell-only`
+on the phase 4 build. Run without `--option b`, the default option A panel
+fails at the cell run, as in the spike table.
+
+| Check | Result |
+| --- | --- |
+| Extension loads, service worker runs | pass |
+| Pyodide boots, worker starts, cell runs | pass |
+| `mo.iframe` resizes to content (new: the 100 px iframe grows to its 900 px content) | pass |
+| `mo.ui` slider, Altair chart, anywidget, `<script src>`, `mo.iframe` inline script | pass |
+| IndexedDB filesystem persists across reload | pass |
+| Phase 3 notebook I/O (seed fallback, open, save, restore, download) | pass |
+| Filesystem cell writes file | fail (timeout). This check failed before phase 3 too. |
+
+No CSP errors are reported. Console output has the known `localStorage`
+`SecurityError` and an `[anywidget] binding destroyed` error during teardown.
+The teardown error was not investigated.
+
+Vitest covers the listener (`iframe-height.test.ts`), and the Python formatter
+and template tests pass. Two gaps remain. The check runs only in headless
+Chromium. While debugging, a child iframe in headless Chromium did not run
+`requestAnimationFrame`, so its `ResizeObserver` never fired. The reporter
+therefore also reports on `load`. Whether the side panel in headed Chrome
+behaves the same way is not verified. Under a strict-CSP web host, the inline
+reporter is blocked, which is a known limit above.
+
+, the sandboxed page. A fails on anywidget and `mo.iframe` because
 both need to execute code that only exists at runtime. MV3 `extension_pages`
 CSP cannot allow `data:`, `blob:` or `unsafe-eval`, so no frontend change can
 fix them. The decision rule needs fixes that are small and general, and these

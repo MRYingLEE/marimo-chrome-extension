@@ -1,6 +1,7 @@
 /* Copyright 2026 Marimo. All rights reserved. */
 
 import { mount } from "@/mount";
+import { registerIframeHeightListener } from "@/utils/iframe-height";
 
 declare global {
   interface Window {
@@ -14,6 +15,7 @@ if (el) {
   if (!window.__MARIMO_MOUNT_CONFIG__) {
     throw new Error("[marimo] mount config not found");
   }
+  registerIframeHeightListener();
   mount(window.__MARIMO_MOUNT_CONFIG__, el);
 } else {
   throw new Error("[marimo] root element not found");

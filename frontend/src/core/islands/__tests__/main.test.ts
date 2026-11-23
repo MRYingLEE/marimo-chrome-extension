@@ -38,7 +38,6 @@ async function importMain(): Promise<typeof MainModule> {
 }
 
 beforeEach(() => {
-  delete window.__resizeIframe;
   document.body.replaceChildren();
   mockInitializeApps.mockClear();
   mockStopSession.mockClear();
@@ -48,20 +47,20 @@ beforeEach(() => {
 });
 
 describe("islands public API surface", () => {
-  it("registers the iframe load handler even without interactive islands", async () => {
-    await importMain();
+  it("registers the iframe height listener even without interactive islands", async () => {
+    const iframe = document.createElement("iframe");
+    document.body.append(iframe);
 
-    expect(window.__resizeIframe).toBeTypeOf("function");
+    await importMain();
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "marimo:iframe-height", height: 240 },
+        source: iframe.contentWindow,
+      }),
+    );
+
+    expect(iframe.style.height).toBe("240px");
     expect(mockInitializeIslands).not.toHaveBeenCalled();
-  });
-
-  it("preserves a host-provided iframe load handler", async () => {
-    const hostResizeIframe = vi.fn();
-    window.__resizeIframe = hostResizeIframe;
-
-    await importMain();
-
-    expect(window.__resizeIframe).toBe(hostResizeIframe);
   });
 
   it("exposes a stable set of exports and signatures", async () => {
