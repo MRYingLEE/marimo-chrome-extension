@@ -7,7 +7,7 @@ added Vitest coverage for the parent save store and the offline runtime notes
 in [`pyodide.md`](pyodide.md).
 
 Goal: run a Pyodide-based marimo notebook in the Chrome side panel, fully
-in the browser, with no marimo server and no network access at runtime.
+in the browser, without a marimo server or a runtime network dependency.
 
 ## Decisions
 
@@ -18,6 +18,18 @@ in the browser, with no marimo server and no network access at runtime.
 | Runtime delivery | Bundle Pyodide, the marimo wheel, and packages. No CDN at runtime. |
 | Notebook source | A bundled demo notebook, plus opening a local `.py` file |
 | Default view | Edit mode |
+
+## Install the extension
+
+[Download the extension (v0.0.4)](../packages/chrome-extension/marimo-chrome-extension-0.0.4.zip?raw=1),
+then extract the archive to a folder. In Chrome or Edge, open
+`chrome://extensions` or `edge://extensions`, enable **Developer mode**, and
+select **Load unpacked**. Choose the extracted folder containing
+`manifest.json`, then open marimo from the extensions toolbar. Keep the folder
+in place while the extension is installed.
+
+The extension runs notebooks locally but does not block notebook network
+access. Only open trusted notebooks.
 
 ## What already exists
 
@@ -113,8 +125,8 @@ and `event.origin` is `"null"`. The sandbox accepts a message only when
 | sandbox → parent | `ready` | `boot.js` is loaded and waits for the notebook |
 | parent → sandbox | `init { code, filename }` | Sent once per sandbox load. The notebook from `chrome.storage.local`, or the seed |
 | sandbox → parent | `save { code }` | The notebook changed, so the parent stores it |
-| parent → sandbox | `open { code, filename }` | The user picked a `.py` file. The sandbox asks for a reload |
-| sandbox → parent | `reload` | The sandbox cannot reload itself, so the parent sets `frame.src` again |
+When a user opens a file, the parent persists it and reloads the sandbox
+directly. The new sandbox receives the file in its `init` message.
 
 ### Iframe resizing
 
@@ -172,11 +184,19 @@ extension bundler such as `@crxjs/vite-plugin`. The repo's
 `minimumReleaseAge` policy in `pnpm-workspace.yaml` would need an exemption,
 and the pipeline above does not need one.
 
+To update the distributable archive after rebuilding, run:
+
+```sh
+cd packages/chrome-extension/dist
+zip -FS -X -r ../marimo-chrome-extension-0.0.4.zip .
+```
+
 With pytest and Playwright installed in the development environment
 (`python -m playwright install chromium`), run:
 
 ```sh
 python -m pytest packages/chrome-extension/scripts/test_build_extension.py
+node --test packages/chrome-extension/panel.test.cjs
 python packages/chrome-extension/scripts/run_spike.py \
   packages/chrome-extension/dist --shell-only
 ```
@@ -206,15 +226,13 @@ python packages/chrome-extension/scripts/run_spike.py \
   `bridge.ts` therefore sets `autosave: "after_delay"` on `userConfigAtom`
   only for `data-host="chrome-extension"`, which the autosave hook reads.
 - The parent opens a file from `<input type="file" accept=".py">`, rejects
-  other extensions, stores the result, and sends `open`. The sandbox asks the
-  parent to reload the frame, and the reloaded sandbox receives the new
-  notebook through `init`. The Download button saves the current source as a
-  Blob with the notebook's filename.
-- Late saves: a `save` that the previous notebook's sandbox sends after `open`
-  must not overwrite the new notebook. The parent sets a `reloading` flag
-  when it sends `open`, drops `save` messages while it is set, and clears it
-  when the reloaded sandbox reports `ready`. This relies on `postMessage`
-  ordering between the parent and the same frame.
+  other extensions, stores the result, and reloads the sandbox. The Download
+  button saves the latest autosaved source as a Blob with the notebook's
+  filename.
+- Storage writes are serialized within a panel. While replacing a notebook,
+  saves from the old sandbox cannot overwrite the new file. If the replacement
+  fails, the latest received old save is retained. Storage and file errors
+  are shown in the panel; a failed storage read does not start with the seed.
 - The manifest requests `unlimitedStorage` for large notebooks.
 - Files written by cells are not persisted in the first version. The sandbox
   uses Pyodide's in-memory filesystem, as marimo already does for opaque
@@ -253,6 +271,9 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
   panel closes. The notebook source itself persists in `chrome.storage.local`.
 - Opening a file replaces the stored notebook. There is no undo, and there is
   no multi-notebook support.
+- Download uses the latest autosaved source; a very recent edit may not yet be
+  included. Closing the panel before autosave runs can also lose recent edits.
+  Separate open panels do not coordinate writes to the shared notebook.
 - `mo.iframe` and other iframe outputs auto-size through a `postMessage` from
   the iframe's content (see [Iframe resizing](#iframe-resizing)). Limits:
   they grow but do not shrink, and the reporter is an inline script, so under
@@ -264,7 +285,8 @@ extension files, but it cannot use `chrome.*`, so the sandbox must not rely on
   `window.__resizeIframe` no longer get it called.
 - Notebook output can run arbitrary script with `unsafe-eval` inside the
   sandbox. It cannot reach `chrome.*` or the extension's storage, which is the
-  point of B, but it has network access to whatever the notebook asks for.
+  point of B, but it can send messages to the parent bridge (including notebook
+  and UI storage writes) and access the network. Only open trusted notebooks.
 - The edit layout was checked at 320, 400, and 500 px by opening the panel
   document in Chromium. The notebook and seed chart fit, but the left icon
   rail takes up a noticeable share of the 320 px viewport. Code wraps more
@@ -453,7 +475,7 @@ therefore also reports on `load`. Whether the side panel in headed Chrome
 behaves the same way is not verified. Under a strict-CSP web host, the inline
 reporter is blocked, which is a known limit above.
 
-, the sandboxed page. A fails on anywidget and `mo.iframe` because
+Option A fails on anywidget and `mo.iframe` because
 both need to execute code that only exists at runtime. MV3 `extension_pages`
 CSP cannot allow `data:`, `blob:` or `unsafe-eval`, so no frontend change can
 fix them. The decision rule needs fixes that are small and general, and these

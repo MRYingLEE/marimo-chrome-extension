@@ -9,16 +9,29 @@
   <body style="margin: 0; display: flex; flex-direction: column; height: 100vh">
     <div
       role="toolbar"
-      style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #ccc; font: 13px system-ui"
+      style="
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-bottom: 1px solid #ccc;
+        font: 13px system-ui;
+      "
     >
       <button id="open" type="button" disabled>Open .py</button>
-      <button id="download" type="button">Download .py</button>
+      <button id="download" type="button" disabled>Download .py</button>
       <span id="status" role="status"></span>
     </div>
     <input id="file" type="file" accept=".py" hidden />
     <iframe
       title="marimo notebook"
-      style="display: block; border: 0; width: 100%; flex: 1 1 auto; min-height: 0"
+      style="
+        display: block;
+        border: 0;
+        width: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
+      "
     ></iframe>
   </body>
 </html>

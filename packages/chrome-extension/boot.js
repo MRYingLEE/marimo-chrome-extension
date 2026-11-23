@@ -9,13 +9,6 @@ async function onMessage(event) {
   ) {
     return;
   }
-  // The parent stores the opened file before it sends `open`, so the reloaded
-  // page receives it through `init`. The sandbox cannot reload itself: its
-  // opaque origin may not navigate to extension resources, so the parent does.
-  if (message.type === "open") {
-    parent.postMessage({ type: "reload" }, "*");
-    return;
-  }
   if (started || message.type !== "init") {
     return;
   }
@@ -23,7 +16,8 @@ async function onMessage(event) {
   // Set before the entrypoint loads, because marimo reads its storage at import.
   window.marimoParentStorage = {
     snapshot: message.storage ?? {},
-    write: (key, value) => parent.postMessage({ type: "storage", key, value }, "*"),
+    write: (key, value) =>
+      parent.postMessage({ type: "storage", key, value }, "*"),
   };
   document.querySelector("marimo-code").textContent = encodeURIComponent(
     message.code,

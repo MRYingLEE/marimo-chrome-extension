@@ -121,7 +121,7 @@ def manifest(option: str) -> dict[str, object]:
     base: dict[str, object] = {
         "manifest_version": 3,
         "name": "marimo",
-        "version": "0.0.3",
+        "version": "0.0.4",
         "permissions": ["sidePanel", "storage", "unlimitedStorage"],
         "background": {"service_worker": "background.js", "type": "module"},
         "side_panel": {"default_path": "sidepanel.html"},
